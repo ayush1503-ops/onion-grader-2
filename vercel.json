@@ -4,5 +4,11 @@
     "app.py": {
       "includeFiles": "{app_page.html,frontend/**,offline/**}"
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/app.py"
+    }
+  ]
 }
