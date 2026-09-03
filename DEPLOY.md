@@ -49,14 +49,13 @@ solved automatically).
 This repo ships `api/index.py` + `vercel.json` for Vercel. It installs
 with **plain pip from `requirements.txt`**.
 
-⚠️ If a Vercel build fails with
-`Failed to run "uv sync --active --no-dev --link-mode hardlink --frozen --no-editable"`,
-that's Vercel's builder auto-detecting the `uv.lock`/`pyproject.toml`
-files and forcing its uv path (which ignores our `installCommand`).
-The fix is already in place: `.vercelignore` excludes `uv.lock` and
-`pyproject.toml` from the build so Vercel falls back to
-`pip install -r requirements.txt`. Don't remove those entries — and you
-can still use `uv` locally; the files stay in Git.
+⚠️ **Do NOT add `uv.lock` / `pyproject.toml` back.** Vercel's Python
+runtime auto-detects those files and force-runs its own
+`uv sync --active --no-dev --link-mode hardlink --frozen --no-editable`
+(which ignores our `installCommand` and fails in Vercel's build). They
+were deliberately removed so Vercel uses `pip install -r requirements.txt`.
+If you use `uv` locally, keep those two files git-ignored — never commit
+them. All runtime dependencies live in `requirements.txt`.
 
 ### Render.com (free, easiest)
 1. Put the project on **GitHub** (create a repo, upload the folder —
