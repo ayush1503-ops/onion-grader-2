@@ -1,0 +1,8 @@
+# OnionGrader - Vercel/serverless runtime dependencies
+# PINNED versions chosen to stay under Vercel's 250 MB function limit
+# (default newest wheels measure ~259 MB -> deploy fails; these ~237 MB)
+# Training tools: requirements-ml.txt | PDF API: requirements-api.txt
+flask>=3.0.0
+opencv-python-headless==4.11.0.86
+numpy==2.2.6
+pillow==11.2.1

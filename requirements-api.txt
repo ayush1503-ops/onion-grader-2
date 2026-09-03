@@ -1,0 +1,3 @@
+# OPTIONAL - integration API PDF export (api.py /batch/pdf endpoints)
+# The main web app does NOT need this.
+reportlab>=4.0.0

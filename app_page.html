@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<!-- =================================================================
+ app_page.html — Onion Quality Grader (SIH26031)
+ Design system: "Minimalist Modern" — electric blue accent, Calistoga
+ display + Inter body + JetBrains Mono labels, pulsing badges, card
+ shadows, inverted honesty section. No frameworks — plain HTML/CSS/JS.
+
+ LIVE MODE (no clicking): the browser grabs camera frames, sends one
+ to the server about every second, and draws the result boxes on a
+ canvas layered over the video. Works on laptop webcam AND phone
+ back camera (getUserMedia). "Generate full report" saves the 4 files.
+================================================================= -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OnionGrader — AI Quality Grading · SIH26031</title>
+<!-- Fonts: degrade gracefully to system fonts if offline -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (Minimalist Modern) ============ */
+:root{
+  --background:#FAFAFA; --foreground:#0F172A;
+  --muted:#F1F5F9; --muted-foreground:#64748B;
+  --accent:#0052FF; --accent-2:#4D7CFF; --accent-fg:#FFFFFF;
+  --border:#E2E8F0; --card:#FFFFFF; --ring:#0052FF;
+  --shadow-sm:0 1px 3px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.07);
+  --shadow-lg:0 10px 15px rgba(0,0,0,.08);
+  --shadow-xl:0 20px 25px rgba(0,0,0,.1);
+  --shadow-accent:0 4px 14px rgba(0,82,255,.25);
+  --shadow-accent-lg:0 8px 24px rgba(0,82,255,.35);
+  --grad:linear-gradient(135deg,#0052FF,#4D7CFF);
+  --font-display:"Calistoga",Georgia,serif;
+  --font-body:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--background);color:var(--foreground);
+  font-family:var(--font-body);line-height:1.625;-webkit-font-smoothing:antialiased;
+  padding-bottom:0}
+.container{max-width:72rem;margin:0 auto;padding:0 1.25rem}
+
+/* ============ NAV ============ */
+nav{position:sticky;top:0;z-index:50;background:rgba(250,250,250,.85);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.nav-inner{display:flex;align-items:center;gap:1rem;padding:.8rem 0}
+.brand{display:flex;align-items:center;gap:.6rem;font-weight:700;font-size:1.05rem}
+.brand .grad-text{font-family:var(--font-display);letter-spacing:.01em}
+.logo-badge{width:38px;height:38px;border-radius:12px;background:var(--grad);
+  display:grid;place-items:center;box-shadow:var(--shadow-accent)}
+.tabs{display:flex;gap:.25rem;margin-left:auto;background:var(--muted);
+  padding:.25rem;border-radius:12px}
+.tab{border:0;background:transparent;padding:.5rem 1rem;border-radius:9px;
+  font:600 .86rem var(--font-body);color:var(--muted-foreground);cursor:pointer;
+  transition:all .2s ease-out}
+.tab:hover{color:var(--foreground)}
+.tab.active{background:var(--card);color:var(--accent);
+  box-shadow:var(--shadow-sm)}
+.nav-mode{display:flex;align-items:center;gap:.5rem;margin-left:.25rem}
+@media(max-width:760px){.tabs{margin-left:auto}.nav-mode{display:none}}
+
+/* ============ SHARED PIECES ============ */
+.grad-text{background:var(--grad);-webkit-background-clip:text;
+  background-clip:text;color:transparent}
+.badge{display:inline-flex;align-items:center;gap:.65rem;border-radius:999px;
+  border:1px solid rgba(0,82,255,.3);background:rgba(0,82,255,.05);
+  padding:.5rem 1.1rem;font:500 .72rem var(--font-mono);
+  text-transform:uppercase;letter-spacing:.15em;color:var(--accent)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);
+  animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}
+  50%{transform:scale(1.35);opacity:.65}}
+h1{font:400 clamp(2.6rem,6vw,4.4rem)/1.05 var(--font-display);
+  letter-spacing:-.02em}
+h2.section-title{font:400 clamp(1.6rem,3.4vw,2.3rem)/1.15 var(--font-display)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;
+  border-radius:12px;padding:.78rem 1.5rem;font:600 .95rem var(--font-body);
+  cursor:pointer;border:1px solid transparent;transition:all .2s ease-out;
+  text-decoration:none;min-height:48px}
+.btn:active{transform:scale(.98)}
+.btn[disabled]{opacity:.55;cursor:not-allowed;transform:none}
+.btn-primary{background:var(--grad);color:#fff;box-shadow:var(--shadow-sm)}
+.btn-primary:hover:not([disabled]){transform:translateY(-2px);
+  box-shadow:var(--shadow-accent-lg);filter:brightness(1.08)}
+.btn-outline{background:transparent;border-color:var(--border);color:var(--foreground)}
+.btn-outline:hover{border-color:rgba(0,82,255,.35);background:var(--muted)}
+.btn .arr{transition:transform .2s}
+.btn:hover:not([disabled]) .arr{transform:translateX(4px)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;
+  box-shadow:var(--shadow-md)}
+select,input[type=text],input[type=number]{width:100%;padding:.7rem .9rem;
+  border:1px solid var(--border);border-radius:10px;font:400 .95rem var(--font-body);
+  background:#fff;color:var(--foreground);transition:box-shadow .2s}
+select:focus,input:focus{outline:none;box-shadow:0 0 0 2px var(--ring),
+  0 0 0 5px rgba(0,82,255,.12)}
+label{display:block;font:600 .82rem var(--font-body);margin:.9rem 0 .35rem;
+  color:var(--foreground)}
+.hint{font:400 .74rem var(--font-body);color:var(--muted-foreground);margin-top:.3rem}
+.mono{font-family:var(--font-mono)}
+
+/* ============ HERO ============ */
+.hero{position:relative;overflow:hidden;padding:4.5rem 0 3rem}
+.hero::before{content:"";position:absolute;top:-220px;right:-160px;width:560px;
+  height:560px;border-radius:50%;background:var(--accent);opacity:.05;
+  filter:blur(150px);pointer-events:none}
+.hero-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:2.5rem;
+  align-items:center}
+@media(max-width:900px){.hero-grid{grid-template-columns:1fr}}
+.hero h1 .grad-underline{position:absolute;bottom:-.25rem;left:0;height:.7rem;
+  width:100%;border-radius:.125rem;
+  background:linear-gradient(to right,rgba(0,82,255,.15),rgba(77,124,255,.08))}
+.hero p.lead{margin:1.3rem 0 1.8rem;color:var(--muted-foreground);
+  font-size:1.08rem;max-width:34rem}
+.cta-row{display:flex;gap:.8rem;flex-wrap:wrap}
+.hero-visual{position:relative;min-height:300px;display:none}
+.hero-img{width:100%;max-width:430px;border-radius:28px;display:block;
+  margin:0 auto;box-shadow:0 20px 25px rgba(0,0,0,.1),0 8px 60px rgba(0,82,255,.12);
+  animation:float 5s ease-in-out infinite}
+.hero-img-wrap{position:relative;max-width:430px;margin:0 auto}
+.hero-img-wrap .hv-ring{inset:auto;width:70%;height:70%;top:15%;left:15%}
+.hero-art-note{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);
+  background:var(--card);border:1px solid var(--border);border-radius:999px;
+  padding:.3rem .8rem;font:500 .6rem var(--font-mono);color:var(--muted-foreground);
+  letter-spacing:.08em;white-space:nowrap;box-shadow:var(--shadow-sm)}
+@media(min-width:900px){.hero-visual{display:block}}
+.hv-ring{position:absolute;inset:0;margin:auto;width:290px;height:290px;
+  border:2px dashed rgba(0,82,255,.3);border-radius:50%;
+  animation:spin 60s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hv-chip{position:absolute;padding:.55rem .9rem;border-radius:12px;
+  background:var(--card);border:1px solid var(--border);box-shadow:var(--shadow-lg);
+  font:500 .72rem var(--font-mono);color:var(--foreground)}
+.hv-chip b{color:var(--accent)}
+.hv-chip.c1{top:8%;left:2%;animation:float 4s ease-in-out infinite}
+.hv-chip.c2{bottom:14%;right:0%;animation:float 4s ease-in-out .8s infinite}
+@keyframes float{0%,100%{transform:translateY(-8px)}50%{transform:translateY(8px)}}
+.stat-row{display:flex;gap:1.6rem;margin-top:2.2rem;flex-wrap:wrap}
+.stat b{display:block;font:400 1.6rem var(--font-display);color:var(--foreground)}
+.stat span{font:500 .68rem var(--font-mono);text-transform:uppercase;
+  letter-spacing:.12em;color:var(--muted-foreground)}
+
+/* ============ SECTIONS ============ */
+.section{padding:3.2rem 0}
+.section-head{margin-bottom:1.6rem}
+.section-head .badge{margin-bottom:1rem}
+.view{display:none}.view.active{display:block}
+
+/* ---- LIVE SCAN ---- */
+.live-grid{display:grid;grid-template-columns:1.25fr .75fr;gap:1.4rem}
+@media(max-width:900px){.live-grid{grid-template-columns:1fr}}
+.cam-wrap{position:relative;border-radius:16px;overflow:hidden;background:#0F172A;
+  aspect-ratio:4/3;border:1px solid var(--border);box-shadow:var(--shadow-xl)}
+.cam-wrap video{width:100%;height:100%;object-fit:cover;display:block}
+.cam-wrap canvas{position:absolute;inset:0;width:100%;height:100%}
+.scanline{position:absolute;left:0;right:0;height:2px;top:0;
+  background:linear-gradient(90deg,transparent,#4D7CFF 30%,#0052FF 50%,#4D7CFF 70%,transparent);
+  opacity:.65;animation:scan 3s ease-in-out infinite;pointer-events:none}
+@keyframes scan{0%{top:4%}50%{top:94%}100%{top:4%}}
+.guide{position:absolute;inset:8%;pointer-events:none;display:none}
+.guide i{position:absolute;width:34px;height:34px;border:3px solid rgba(77,124,255,.9)}
+.guide i:nth-child(1){top:0;left:0;border-right:0;border-bottom:0;border-radius:8px 0 0 0}
+.guide i:nth-child(2){top:0;right:0;border-left:0;border-bottom:0;border-radius:0 8px 0 0}
+.guide i:nth-child(3){bottom:0;left:0;border-right:0;border-top:0;border-radius:0 0 0 8px}
+.guide i:nth-child(4){bottom:0;right:0;border-left:0;border-top:0;border-radius:0 0 8px 0}
+.qmeter{position:absolute;top:.8rem;right:.8rem;background:rgba(15,23,42,.78);color:#fff;
+  border-radius:999px;padding:.4rem .85rem;font:500 .66rem var(--font-mono);
+  letter-spacing:.1em;text-transform:uppercase;backdrop-filter:blur(6px);display:none;
+  align-items:center;gap:.45rem}
+.qmeter .dot{background:#22c55e}
+.qmeter.bad .dot{background:#f59e0b;animation:none}
+#zoomSlider{position:absolute;bottom:3.6rem;right:.8rem;width:130px;display:none;
+  accent-color:var(--accent)}
+.chipbtn.on{background:rgba(0,82,255,.9)}
+.cam-idle{position:absolute;inset:0;display:grid;place-items:center;
+  color:#cbd5e1;text-align:center;padding:1.5rem}
+.cam-idle .big{font-size:2.6rem;margin-bottom:.6rem}
+.status-pill{position:absolute;top:.8rem;left:.8rem;display:inline-flex;
+  align-items:center;gap:.5rem;background:rgba(15,23,42,.78);color:#fff;
+  border-radius:999px;padding:.4rem .85rem;font:500 .7rem var(--font-mono);
+  letter-spacing:.12em;text-transform:uppercase;backdrop-filter:blur(6px)}
+.status-pill .dot{background:#22c55e}
+.status-pill.paused .dot{background:#f59e0b;animation:none}
+.cam-actions{position:absolute;bottom:.8rem;left:.8rem;right:.8rem;
+  display:flex;gap:.5rem;flex-wrap:wrap}
+.chipbtn{background:rgba(15,23,42,.78);color:#fff;border:1px solid rgba(255,255,255,.18);
+  border-radius:10px;padding:.5rem .9rem;font:600 .78rem var(--font-body);
+  cursor:pointer;backdrop-filter:blur(6px);transition:all .2s}
+.chipbtn:hover{background:rgba(0,82,255,.85)}
+.tally .count{font:400 3rem/1 var(--font-display);margin:.2rem 0 .9rem}
+.tally .count small{font:500 .8rem var(--font-body);color:var(--muted-foreground)}
+.bar-row{margin:.65rem 0}
+.bar-label{display:flex;justify-content:space-between;font:600 .8rem var(--font-body)}
+.bar-label .mono{color:var(--muted-foreground);font-weight:400;font-size:.72rem}
+.bar{height:14px;border-radius:8px;background:var(--muted);overflow:hidden;margin-top:3px}
+.bar>div{height:100%;border-radius:8px;transition:width .5s ease-out;min-width:2%}
+.scale-chip{display:inline-flex;align-items:center;gap:.45rem;background:var(--muted);
+  border-radius:10px;padding:.5rem .8rem;font:500 .72rem var(--font-mono);
+  color:var(--muted-foreground);margin-top:.6rem}
+.scale-chip b{color:var(--accent)}
+.warn-box{background:#fef9c3;border:1px solid #fde047;color:#713f12;
+  border-radius:10px;padding:.6rem .8rem;font-size:.78rem;margin-top:.7rem}
+.ai-panel{background:rgba(0,82,255,.05);border:1px solid rgba(0,82,255,.25);
+  border-radius:12px;padding:.9rem;font-size:.8rem;color:#1e3a8a;margin-top:.7rem}
+
+/* ---- UPLOAD ---- */
+.upload-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:1.4rem}
+@media(max-width:900px){.upload-grid{grid-template-columns:1fr}}
+.filebtn{display:flex;flex-direction:column;align-items:center;gap:.4rem;
+  text-align:center;padding:2.2rem 1rem;border:2px dashed rgba(0,82,255,.4);
+  border-radius:14px;cursor:pointer;background:rgba(0,82,255,.03);
+  transition:all .2s ease-out}
+.filebtn:hover{background:rgba(0,82,255,.07);border-color:var(--accent);
+  box-shadow:var(--shadow-accent)}
+.filebtn input{display:none}
+.filebtn .big{font-size:2rem}
+.filebtn b{font-size:.95rem}
+.filebtn span{font-size:.76rem;color:var(--muted-foreground)}
+.tips{font-size:.82rem;color:var(--muted-foreground)}
+.tips li{margin:.35rem 0 .35rem 1.1rem}
+
+/* ============ RESULTS ============ */
+#results{display:none}
+.meta-chips{display:flex;flex-wrap:wrap;gap:.5rem;margin:.9rem 0}
+.meta-chips div{background:var(--muted);border-radius:10px;padding:.45rem .8rem;
+  font:500 .74rem var(--font-body);color:var(--muted-foreground)}
+.meta-chips b{color:var(--foreground)}
+.grade-bars{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1.1rem 0}
+@media(max-width:700px){.grade-bars{grid-template-columns:1fr}}
+.gb{border-radius:14px;padding:1rem 1.1rem;color:#fff;position:relative;overflow:hidden}
+.gb.a{background:linear-gradient(135deg,#15803d,#22c55e)}
+.gb.u{background:linear-gradient(135deg,#b45309,#f59e0b)}
+.gb.r{background:linear-gradient(135deg,#b91c1c,#ef4444)}
+.gb.c{background:linear-gradient(135deg,#334155,#64748b)}
+.gb .pct{font:400 2rem/1 var(--font-display)}
+.gb .lbl{font:500 .68rem var(--font-mono);text-transform:uppercase;letter-spacing:.12em;opacity:.92}
+.gb .cnt{font-size:.76rem;opacity:.92}
+.stat-chips{display:flex;flex-wrap:wrap;gap:.5rem;margin:.8rem 0}
+.stat-chips div{border:1px solid var(--border);border-radius:10px;padding:.45rem .8rem;
+  font:500 .72rem var(--font-mono);color:var(--muted-foreground);background:#fff}
+.stat-chips b{color:var(--foreground)}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th{background:var(--foreground);color:#fff;padding:.55rem .6rem;text-align:left;
+  font:500 .68rem var(--font-mono);text-transform:uppercase;letter-spacing:.08em}
+td{padding:.5rem .6rem;border-bottom:1px solid var(--border)}
+tr:nth-child(even) td{background:var(--muted)}
+.chip{display:inline-block;padding:.15rem .6rem;border-radius:999px;color:#fff;
+  font-weight:700;font-size:.68rem}
+.dl{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1rem}
+.dl a{text-decoration:none;background:var(--foreground);color:#fff;
+  padding:.6rem 1rem;border-radius:10px;font:600 .78rem var(--font-body);
+  transition:all .2s}
+.dl a:hover{background:var(--accent);box-shadow:var(--shadow-accent);
+  transform:translateY(-2px)}
+img.result-img{width:100%;border-radius:12px;border:1px solid var(--border);
+  margin-top:.6rem}
+.res-2col{display:grid;grid-template-columns:1fr 1fr;gap:1.4rem;margin-top:1.4rem}
+@media(max-width:800px){.res-2col{grid-template-columns:1fr}}
+
+/* ============ DARK HONESTY SECTION ============ */
+.dark{background:var(--foreground);color:#fff;position:relative;overflow:hidden}
+.dark::before{content:"";position:absolute;inset:0;opacity:.05;
+  background-image:radial-gradient(circle,#fff 1px,transparent 1px);
+  background-size:32px 32px;pointer-events:none}
+.dark .section-title{color:#fff}
+.can-can{display:grid;grid-template-columns:1fr 1fr;gap:1.4rem;margin-top:1.6rem;
+  position:relative}
+@media(max-width:800px){.can-can{grid-template-columns:1fr}}
+.pane{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+  border-radius:16px;padding:1.4rem}
+.pane h3{font:400 1.25rem var(--font-display);margin-bottom:.8rem}
+.pane.ok h3{color:#4ade80}
+.pane.no h3{color:#fbbf24}
+.pane li{list-style:none;margin:.5rem 0;font-size:.86rem;color:rgba(255,255,255,.85);
+  display:flex;gap:.6rem}
+.pane li span.ic{flex:0 0 auto}
+
+/* ============ STEPS ============ */
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.4rem;position:relative}
+@media(max-width:800px){.steps{grid-template-columns:1fr}}
+.step .num{font:400 2.4rem var(--font-display);color:var(--accent)}
+.step h4{font:600 .95rem var(--font-body);margin:.3rem 0 .35rem}
+.step p{font-size:.82rem;color:var(--muted-foreground)}
+
+/* ============ FOOTER ============ */
+footer{background:var(--muted);border-top:1px solid var(--border);
+  padding:1.4rem 0;margin-top:2rem}
+footer .f1{font:500 .74rem var(--font-mono);color:var(--muted-foreground);
+  text-transform:uppercase;letter-spacing:.1em}
+footer .f2{font-size:.78rem;color:var(--muted-foreground);margin-top:.4rem}
+
+/* toast + misc */
+.setup{display:none;background:#fef9c3;border:1px solid #fde047;color:#713f12;
+  border-radius:12px;padding:.9rem 1.1rem;font-size:.8rem;line-height:1.55;margin:.9rem 0}
+.setup b{color:#713f12}
+.setup code{background:rgba(0,0,0,.07);padding:.1rem .35rem;border-radius:5px;
+  font-family:var(--font-mono);font-size:.72rem}
+#toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);
+  background:var(--foreground);color:#fff;border-radius:12px;padding:.7rem 1.2rem;
+  font:500 .84rem var(--font-body);box-shadow:var(--shadow-xl);display:none;
+  z-index:99;max-width:90vw}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+  /* ======== 3D DEPTH REFINEMENT LAYER ========
+     Calmer, deeper, premium: no bobbing chips, layered shadows,
+     glass surfaces, real 3D stage. */
+  .hv-chip{animation:none !important;background:rgba(255,255,255,.78);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    border:1px solid rgba(15,23,42,.08);box-shadow:0 12px 28px rgba(15,23,42,.12)}
+  .hero-img{animation:none;box-shadow:0 30px 60px rgba(15,23,42,.14),0 8px 80px rgba(0,82,255,.10)}
+  .card{transition:transform .25s ease,box-shadow .25s ease}
+  .card.tiltable:hover{box-shadow:var(--shadow-lg)}
+  .btn:active{transform:translateY(1px) scale(.995)}
+  h1{letter-spacing:-.03em}
+  .stage3d{position:relative;width:100%;max-width:460px;height:min(480px,58vw);
+    margin:0 auto;border-radius:28px;cursor:grab}
+  .stage3d:active{cursor:grabbing}
+  .stage3d canvas{width:100% !important;height:100% !important;display:block}
+  .stage-hint{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
+    background:rgba(255,255,255,.75);backdrop-filter:blur(8px);
+    border:1px solid rgba(15,23,42,.07);border-radius:999px;padding:.3rem .8rem;
+    font:500 .62rem var(--font-mono);color:var(--muted-foreground);
+    letter-spacing:.1em;pointer-events:none}
+  .stage3d::after{content:"";position:absolute;inset:auto 8% -6% 8%;height:36px;
+    background:radial-gradient(ellipse at center,rgba(0,82,255,.16),transparent 70%);
+    filter:blur(6px);pointer-events:none}
+  </style>
+<link rel="icon" href="/assets/favicon.png">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+  </head>
+<body>
+
+<!-- ==================== NAV ==================== -->
+<nav>
+  <div class="container nav-inner">
+    <div class="brand">
+      <div class="logo-badge">
+        <!-- inline SVG onion logo -->
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 7c-3.5 0-6.5 2.8-6.5 6.2S8 20 12 20s6.5-3.4 6.5-6.8S15.5 7 12 7z"
+                fill="#fff" opacity=".95"/>
+          <path d="M12 7c0-2 1-3.2 2.4-4M12 7c0-1.6-.6-2.6-1.8-3.4"
+                stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <span>Onion<span class="grad-text">Grader</span></span>
+    </div>
+    <div class="tabs">
+      <button class="tab active" id="tab-live" data-i18n="tab_live" onclick="switchView('live')">◉ Live Scan</button>
+      <button class="tab" id="tab-upload" data-i18n="tab_upload" onclick="switchView('upload')">⬆ Upload Photo</button>
+      <a class="tab" style="text-decoration:none" href="/offline/" target="_blank">⤓ Offline App</a>
+    </div>
+    <button class="chipbtn" id="langToggle" onclick="toggleLang()"
+        style="margin-left:.5rem" title="Switch language / भाषा बदलें">हिं</button>
+    <div class="nav-mode">
+      <span class="mono" style="font-size:.68rem;color:var(--muted-foreground);letter-spacing:.1em">AI&nbsp;MODE</span>
+      <label style="display:flex;align-items:center;gap:.45rem;margin:0;cursor:pointer;font:600 .78rem var(--font-body)">
+        <input type="checkbox" id="yoloToggle" style="width:16px;height:16px;accent-color:var(--accent)">
+        YOLOv8
+      </label>
+    </div>
+  </div>
+</nav>
+
+<!-- ==================== HERO ==================== -->
+<header class="hero">
+  <div class="container hero-grid">
+    <div>
+      <div class="badge"><span class="dot"></span>SIH26031 · AI QUALITY GRADING</div>
+      <h1 style="margin-top:1.1rem">Onion grading,<br>minus the <span style="position:relative;display:inline-block"><span class="grad-text">human bias</span><span class="grad-underline"></span></span>.</h1>
+      <p class="lead">Point your camera at a batch of onions. Get an exact count,
+        millimetre sizes from a coin reference, defect classes and an instant
+        digital quality report — on your laptop or your phone.</p>
+      <div class="cta-row">
+        <button class="btn btn-primary" onclick="switchView('live');startCamera()">
+          <span data-i18n="cta_live">Start Live Scan</span> <span class="arr">→</span></button>
+        <button class="btn btn-outline" onclick="switchView('upload')"><span data-i18n="cta_upload">Upload a photo</span></button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b>5</b><span>defect classes</span></div>
+        <div class="stat"><b>±1&nbsp;mm</b><span>coin-calibrated</span></div>
+        <div class="stat"><b>4</b><span>report files</span></div>
+        <div class="stat"><b>0</b><span>clicks needed</span></div>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="hero-img-wrap">
+        <div class="stage3d" id="stage3d" style="display:none"></div>
+        <img class="hero-img" id="heroFallback" src="/assets/hero_onion.jpg"
+             alt="Golden onion peeled open, glowing blue at its core - AI-generated concept art"
+             onerror="this.parentElement.parentElement.style.display='none'">
+        <div class="hv-chip c1">count <b>8 onions</b></div>
+        <div class="hv-chip c2">grade&nbsp;A <b>37.5%</b></div>
+        <div class="hero-art-note" id="heroNote">interactive 3D - drag to rotate</div>
+      </div>
+    </div>
+  </header>
+
+<main class="container" style="padding-bottom:2rem">
+
+  <!-- shown automatically when camera/API are unavailable (static preview) -->
+  <div class="setup" id="setupNote">
+    <b>👀 This is a look-and-feel preview only — the camera and analysis are
+    switched off inside it</b> (the preview pane is sandboxed: no camera
+    permission, no server connection). To actually take photos and get
+    reports, run the app for real:
+    <br>1 · On your laptop: <code>python app.py</code> then open
+    <code>http://localhost:8000</code> in Chrome/Edge.
+    <br>2 · On your phone (same Wi-Fi): open the <code>http://192.168.x.x:8000</code>
+    link the app prints.
+    <br>3 · Fully offline: open <code>/offline/</code> once online →
+    “Add to Home Screen” → works without internet afterwards.
+  </div>
+
+<!-- ==================== LIVE SCAN VIEW ==================== -->
+<section class="section view active" id="view-live">
+  <div class="section-head">
+    <div class="badge"><span class="dot"></span>LIVE SCANNING · NO CLICKING</div>
+    <h2 class="section-title">Hold the camera over the batch.<br>The AI grades <span class="grad-text">continuously.</span></h2>
+  </div>
+
+  <div class="live-grid">
+    <!-- camera -->
+    <div>
+      <div class="cam-wrap">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="scanline" id="scanline" style="display:none"></div>
+        <div class="guide" id="guide"><i></i><i></i><i></i><i></i></div>
+        <div class="qmeter" id="qMeter"><span class="dot"></span><span id="qTxt">CHECKING…</span></div>
+        <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1">
+        <div class="cam-idle" id="camIdle">
+          <div>
+            <div class="big">📷</div>
+            <b>Camera is off</b><br>
+            <span style="font-size:.8rem">Press “Start camera”. Allow the browser permission.
+            On the phone it uses the back camera.</span>
+          </div>
+        </div>
+        <div class="status-pill" id="livePill" style="display:none">
+          <span class="dot"></span><span id="livePillTxt">LIVE</span>
+        </div>
+        <div class="cam-actions">
+          <button class="chipbtn" id="btnStart" data-i18n="start" onclick="startCamera()">▶ Start camera</button>
+          <button class="chipbtn" id="btnPause" data-i18n="pause" onclick="togglePause()" style="display:none">⏸ Pause</button>
+          <button class="chipbtn" id="btnFlip" data-i18n="flip" onclick="flipCamera()" style="display:none">🔄 Flip</button>
+          <button class="chipbtn" id="btnTorch" data-i18n="torch" onclick="toggleTorch()" style="display:none">🔦 Torch</button>
+        </div>
+      </div>
+      <p class="hint" style="margin-top:.6rem">💡 Keep the <b>coin in frame</b> the whole time —
+        it is the ruler. Onions in a single layer on a light background.
+        Live overlay boxes appear automatically about once a second.</p>
+    </div>
+
+    <!-- live tally -->
+    <div class="card tally" style="padding:1.3rem">
+      <div class="badge" style="padding:.35rem .8rem"><span class="dot"></span>LIVE TALLY</div>
+      <div class="count"><span id="tCount">—</span> <small>onions detected</small></div>
+      <div class="bar-row">
+        <div class="bar-label"><span style="color:#15803d">Grade A</span>
+          <span class="mono" id="tA">0%</span></div>
+        <div class="bar"><div id="bA" style="width:2%;background:linear-gradient(90deg,#15803d,#22c55e)"></div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label"><span style="color:#b45309">Grade URS</span>
+          <span class="mono" id="tU">0%</span></div>
+        <div class="bar"><div id="bU" style="width:2%;background:linear-gradient(90deg,#b45309,#f59e0b)"></div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label"><span style="color:#b91c1c">Reject</span>
+          <span class="mono" id="tR">0%</span></div>
+        <div class="bar"><div id="bR" style="width:2%;background:linear-gradient(90deg,#b91c1c,#ef4444)"></div></div>
+      </div>
+      <div class="scale-chip">📏 <span id="tScale">scale: —</span></div>
+      <div id="liveWarn"></div>
+      <div id="yoloPanel"></div>
+      <div style="margin-top:1rem">
+        <button class="btn btn-primary" style="width:100%" id="btnReport"
+                onclick="generateFullReport()" disabled><span data-i18n="fullrep">
+          Generate full report <span class="arr">→</span></span></button>
+        <p class="hint">Saves the 4 report files from the current frame
+          (annotated image, JSON, text, report card).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== UPLOAD VIEW ==================== -->
+<section class="section view" id="view-upload">
+  <div class="section-head">
+    <div class="badge"><span class="dot"></span>PHOTO ANALYSIS · FULL REPORT</div>
+    <h2 class="section-title">One photo, <span class="grad-text">one report</span> — in seconds.</h2>
+  </div>
+
+  <div class="upload-grid">
+    <div class="card" style="padding:1.5rem">
+      <label class="filebtn" for="photo">
+        <img src="/assets/hero_onion.jpg" alt="" style="width:54px;height:54px;
+           border-radius:16px;object-fit:cover;box-shadow:0 8px 20px rgba(0,82,255,.15)">
+        <b data-i18n="upload_b">Add photo of the onion batch</b>
+        <span data-i18n="upload_s">On the phone this opens the camera · JPG / PNG / WEBP</span>
+        <input type="file" id="photo" accept="image/*" capture="environment">
+      </label>
+      <div class="hint" id="pickname" style="margin-top:.6rem">No photo selected yet.</div>
+
+      <div class="hint" style="margin-top:.9rem;background:rgba(0,82,255,.05);
+           border:1px solid rgba(0,82,255,.2);border-radius:10px;padding:.6rem .8rem">
+        🪙 <b>Nothing to set — it's automatic.</b> If a coin is visible in the
+        photo it is detected by itself (assumed ₹10/₹2 = 27&nbsp;mm).
+        No coin? Sizes are honest estimates (you'll see a ⚠️ warning).
+      </div>
+
+      <button class="btn btn-primary" id="btn" style="width:100%;margin-top:1.2rem"
+              onclick="analyzeUpload()"><span data-i18n="analyze">🔍 Analyze Batch</span> <span class="arr">→</span></button>
+      <div id="status" style="text-align:center;margin-top:.7rem;font-size:.85rem"></div>
+    </div>
+
+    <div class="card" style="padding:1.5rem">
+      <h2 class="section-title" style="font-size:1.25rem;margin-bottom:.7rem">📸 Photo tips</h2>
+      <ul class="tips">
+        <li>Onions in <b>one layer</b> on a <b>light background</b> (white cloth / paper).</li>
+        <li>Optional but best: put a coin <b>flat</b> in the photo (₹10/₹2 =
+        exact mm). No coin works too — sizes become estimates.</li>
+        <li>Hold the phone <b>directly above</b>, parallel to the table.</li>
+        <li>Good, even light. No harsh shadows.</li>
+      </ul>
+      <div class="ai-panel" style="margin-top:1rem">
+        <b>Two AI engines:</b><br>
+        ◉ <b>Classic CV</b> — threshold + watershed counting. Works instantly, no training.<br>
+        ⚡ <b>YOLOv8</b> — neural detection. Needs your fine-tuned
+        <span class="mono">models/onion_yolo.pt</span> (train with
+        <span class="mono">train_yolo.py</span>). Toggle it in the top bar.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== RESULTS ==================== -->
+<section class="section" id="results"></section>
+</main>
+
+<!-- ==================== HONESTY (dark) ==================== -->
+<section class="dark section">
+  <div class="container">
+    <div class="badge" style="border-color:rgba(255,255,255,.25);background:rgba(255,255,255,.06);color:#93c5fd">
+      <span class="dot"></span>HONEST CAPABILITIES</div>
+    <h2 class="section-title" style="margin-top:1rem">What this AI <span class="grad-text">can</span> and
+      <span class="grad-text">cannot</span> see.</h2>
+    <div class="can-can">
+      <div class="pane ok">
+        <h3>✓ It CAN (from the photo)</h3>
+        <ul>
+          <li><span class="ic">●</span>Count every onion — touching ones split with watershed</li>
+          <li><span class="ic">●</span>Measure each diameter in mm (coin as ruler)</li>
+          <li><span class="ic">●</span>See VISIBLE surface defects: green sprouts, dark rot patches, brown damage</li>
+          <li><span class="ic">●</span>Compute % Grade A / URS / Reject + a digital report</li>
+        </ul>
+      </div>
+      <div class="pane no">
+        <h3>✗ It CANNOT (never from a normal photo)</h3>
+        <ul>
+          <li><span class="ic">●</span>Internal rot hidden under healthy-looking skin</li>
+          <li><span class="ic">●</span>Internal damage or moisture content</li>
+          <li><span class="ic">●</span>Smell, firmness, weight</li>
+          <li><span class="ic">●</span>“Guaranteed accuracy” — thresholds are demo starting points;
+              real accuracy must be measured on a labeled test set</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== HOW IT WORKS ==================== -->
+<section class="section">
+  <div class="container">
+    <div class="badge"><span class="dot"></span>HOW IT WORKS</div>
+    <h2 class="section-title" style="margin:1rem 0 1.6rem">Three steps to a <span class="grad-text">transparent</span> grade.</h2>
+    <div class="steps">
+      <div class="step card" style="padding:1.4rem">
+        <div class="num">01</div><h4>Capture</h4>
+        <p>Live camera or a photo. A coin sits next to the batch — it is the
+          exact millimetre ruler for every measurement.</p>
+      </div>
+      <div class="step card" style="padding:1.4rem">
+        <div class="num">02</div><h4>Analyze</h4>
+        <p>Classic CV (Otsu → watershed → HSV color rules) or a fine-tuned
+          YOLOv8 neural detector. Same honest grading logic on top.</p>
+      </div>
+      <div class="step card" style="padding:1.4rem">
+        <div class="num">03</div><h4>Report</h4>
+        <p>Annotated image, JSON + text reports and a report card — with
+          batch ID, date/time and the honesty disclaimer. Zero subjectivity.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div class="f1">OnionGrader · Smart India Hackathon 2026 · SIH26031</div>
+    <div class="f2" data-i18n="honest">Visible surface analysis only — a normal photo cannot detect internal rot,
+      internal damage or internal moisture. No accuracy is claimed until measured on a labeled test set.</div>
+  </div>
+</footer>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ================= shared helpers ================= */
+var CLASS_COLORS={GOOD:"#16a34a",DAMAGED:"#d97706",ROTTEN:"#dc2626",
+  SPROUTED:"#c026d3",UNDERSIZED:"#0284c7"};
+var GC={A:"#15803d",URS:"#b45309",REJECT:"#b91c1c",CHECK:"#475569"};
+var $=function(id){return document.getElementById(id)};
+function toast(msg,long){var t=$("toast");t.innerHTML=msg;t.style.display="block";
+  clearTimeout(t._h);t._h=setTimeout(function(){t.style.display="none"},
+  long?9000:3500);}
+function chip(text,color){return '<span class="chip" style="background:'+color+'">'
+  +text+"</span>";}
+function coinSettings(){
+  /* the coin question was removed from the UI - the server auto-detects
+     the coin and assumes Rs.10/Rs.2 = 27 mm (advanced callers can still
+     POST coin_preset=custom|distance|assume with values) */
+  return{coin_preset:"auto",coin_custom:"",
+    mode:$("yoloToggle")&&$("yoloToggle").checked?"yolo":"cv"};
+}
+function appendForm(fd){
+  var s=coinSettings();
+  fd.append("coin_preset",s.coin_preset);
+  fd.append("coin_custom",s.coin_custom);
+  fd.append("mode",s.mode);
+}
+
+/* ================= view switching ================= */
+function switchView(v){
+  ["live","upload"].forEach(function(name){
+    $("view-"+name).classList.toggle("active",name===v);
+    $("tab-"+name).classList.toggle("active",name===v);
+  });
+  if(v!=="live"&&stream&&!paused){togglePause();}   // save battery
+}
+$("yoloToggle").addEventListener("change",function(){
+  var on=this.checked;
+  fetch("/api/mode-info").then(function(r){return r.json()})
+  .then(function(info){
+    var panel=$("yoloPanel");
+    if(on&&!info.yolo_ready){
+      $("yoloToggle").checked=false;
+      panel.innerHTML='<div class="ai-panel" style="background:#fff7ed;border-color:#fdba74;color:#7c2d12">'+
+        "<b>YOLO mode is not ready yet (honest status).</b><br>"+info.message+
+        '<br><span class="mono" style="font-size:.68rem">python train_yolo.py --data dataset.yaml</span></div>';
+      toast("⚠️ YOLO needs training first — staying on Classic CV.",true);
+    }else{
+      panel.innerHTML=on?'<div class="ai-panel">⚡ <b>YOLOv8 onion model active.</b></div>':"";
+    }
+  }).catch(function(){});
+});
+
+/* ================= LIVE CAMERA MODE ================= */
+var stream=null,paused=false,busy=false,lastFrameBlob=null,liveTimer=null;
+var bestFrame={blob:null,sharp:0,t:0};   /* sharpest recent frame */
+var lastSmall=null;                      /* for scene-change detection */
+var smooth=[];                           /* last results for temporal smoothing */
+var torchOn=false, zoomTrack=null;
+var facing="environment";
+
+function startCamera(){
+  if(stream){return;}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    toast("❌ This browser has no camera API. Open the app over HTTPS or localhost.",true);return;}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:facing,
+      width:{ideal:1280},height:{ideal:960}},audio:false})
+  .then(function(s){
+    stream=s;$("video").srcObject=s;
+    $("camIdle").style.display="none";
+    $("btnStart").style.display="none";
+    $("btnPause").style.display="";$("btnFlip").style.display="";
+    $("livePill").style.display="";$("livePill").classList.remove("paused");
+    $("livePillTxt").textContent="LIVE";
+    $("scanline").style.display="block";
+    $("guide").style.display="block";
+    paused=false;
+    /* advanced controls: torch + zoom if this camera supports them */
+    var track=stream.getVideoTracks()[0];
+    zoomTrack=track;
+    try{
+      var caps=track.getCapabilities?track.getCapabilities():{};
+      if(caps.torch){$("btnTorch").style.display="";}
+      if(caps.zoom){
+        var z=$("zoomSlider");
+        z.min=caps.zoom.min;z.max=caps.zoom.max;z.step=caps.zoom.step||0.1;
+        z.style.display="block";
+      }
+    }catch(e){}
+    liveTimer=setInterval(liveTick,1100);
+    liveTick();
+  })
+  .catch(function(err){
+    toast("❌ Camera error: "+err.name+". Allow camera permission; "+
+      "if inside a preview iframe, open the app URL in its own tab.",true);
+  });
+}
+function toggleTorch(){
+  var track=stream&&stream.getVideoTracks()[0];
+  if(!track){return;}
+  torchOn=!torchOn;
+  track.applyConstraints({advanced:[{torch:torchOn}]})
+  .then(function(){$("btnTorch").classList.toggle("on",torchOn);})
+  .catch(function(){
+    toast("🔦 Torch is not supported on this camera/browser.");
+    torchOn=false;$("btnTorch").classList.remove("on");
+  });
+}
+/* zoom slider */
+document.addEventListener("input",function(ev){
+  if(ev.target&&ev.target.id==="zoomSlider"&&zoomTrack){
+    zoomTrack.applyConstraints({advanced:[{zoom:parseFloat(ev.target.value)}]})
+    .catch(function(){});
+  }
+});
+/* ---- client-side frame quality (cheap, on a 160px canvas) ---- */
+function frameQuality(){
+  var v=$("video");if(!v.videoWidth){return null;}
+  var s=160,sc=s/v.videoWidth;
+  var c=document.createElement("canvas");
+  c.width=s;c.height=Math.round(v.videoHeight*sc);
+  var x=c.getContext("2d");x.drawImage(v,0,0,c.width,c.height);
+  var d=x.getImageData(0,0,c.width,c.height).data;
+  var n=c.width*c.height,g=new Float32Array(n),sum=0,i,p;
+  for(i=0;i<n;i++){p=i*4;g[i]=0.299*d[p]+0.587*d[p+1]+0.114*d[p+2];sum+=g[i];}
+  var mean=sum/n,vs=0,y,xx,lap;
+  for(y=1;y<c.height-1;y++)for(xx=1;xx<c.width-1;xx++){
+    i=y*c.width+xx;lap=4*g[i]-g[i-1]-g[i+1]-g[i-c.width]-g[i+c.width];
+    vs+=lap*lap;
+  }
+  return {sharp:vs/((c.width-2)*(c.height-2)),mean:mean,g:g,w:c.width,h:c.height};
+}
+function qualityLabel(q){
+  if(q.mean<60)return {ok:false,txt:t("q_dark")};
+  if(q.mean>240)return {ok:false,txt:t("q_bright")};
+  if(q.sharp<30)return {ok:false,txt:t("q_blur")};
+  return {ok:true,txt:t("q_good")+Math.round(q.sharp)};
+}
+function togglePause(){
+  paused=!paused;
+  $("livePill").classList.toggle("paused",paused);
+  $("livePillTxt").textContent=paused?"PAUSED":"LIVE";
+  $("btnPause").innerHTML=paused?"▶ Resume":"⏸ Pause";
+  $("scanline").style.display=paused?"none":"block";
+}
+function flipCamera(){
+  facing=(facing==="environment")?"user":"environment";
+  if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null;
+    clearInterval(liveTimer);
+    bestFrame={blob:null,sharp:0,t:0};smooth=[];lastSmall=null;
+    $("btnTorch").style.display="none";torchOn=false;
+    $("zoomSlider").style.display="none";
+    startCamera();}
+}
+function grabFrame(){
+  var v=$("video");
+  if(!v.videoWidth){return Promise.resolve(null);}
+  var maxSide=960,scale=Math.min(1,maxSide/v.videoWidth);
+  var w=Math.round(v.videoWidth*scale),h=Math.round(v.videoHeight*scale);
+  var c=document.createElement("canvas");c.width=w;c.height=h;
+  c.getContext("2d").drawImage(v,0,0,w,h);
+  return new Promise(function(res){
+    c.toBlob(function(b){res(b)},"image/jpeg",0.8);
+  });
+}
+function liveTick(){
+  if(busy||paused||!stream){return;}
+  /* 1) cheap quality check FIRST (no server call if the frame is bad) */
+  var q=frameQuality();
+  if(!q){return;}
+  var ql=qualityLabel(q),qm=$("qMeter");
+  qm.style.display="flex";
+  qm.classList.toggle("bad",!ql.ok);
+  $("qTxt").textContent=ql.txt;
+  if(!ql.ok){return;}                    /* tell the user, skip AI this tick */
+  /* 2) scene-change detection: skip if the picture barely changed */
+  var changed=true;
+  if(lastSmall){
+    var diff=0;for(var i=0;i<q.g.length;i+=7){diff+=Math.abs(q.g[i]-lastSmall[i]);}
+    diff/=(q.g.length/7);
+    changed=diff>2.0;
+  }
+  busy=true;
+  grabFrame().then(function(blob){
+    if(!blob){busy=false;return;}
+    lastFrameBlob=blob;lastSmall=q.g;
+    /* 3) remember the sharpest recent good frame (for the full report) */
+    var now=Date.now();
+    if(q.sharp>bestFrame.sharp||now-bestFrame.t>10000){
+      bestFrame={blob:blob,sharp:q.sharp,t:now};
+    }
+    if(!changed&&smooth.length){busy=false;return;}  /* scene unchanged */
+    var fd=new FormData();fd.append("frame",blob,"frame.jpg");appendForm(fd);
+    return fetch("/api/live",{method:"POST",body:fd})
+      .then(function(r){return r.json()})
+      .then(function(d){
+        busy=false;
+        if(d.ok){
+          /* 4) temporal smoothing: median of the last 3 results */
+          smooth.push(d.rep);if(smooth.length>3){smooth.shift();}
+          drawLive(d.rep);
+          var med=function(arr){var s=arr.slice().sort(function(a,b){return a-b;});
+            return s[s.length>>1];};
+          var counts=smooth.map(function(r){return r.onion_count;});
+          var mA=smooth.map(function(r){return r.grade_percent.A;});
+          var mU=smooth.map(function(r){return r.grade_percent.URS;});
+          var mR=smooth.map(function(r){return r.grade_percent.REJECT;});
+          $("tCount").textContent=med(counts);
+          $("tA").textContent=med(mA)+"%";$("tU").textContent=med(mU)+"%";
+          $("tR").textContent=med(mR)+"%";
+        }else{$("liveWarn").innerHTML='<div class="warn-box">⚠️ '+d.error+"</div>";
+          if(String(d.error).indexOf("onion_yolo")>=0){$("yoloToggle").checked=false;}}
+      });
+  }).catch(function(){busy=false;});
+}
+function drawLive(rep){
+  $("btnReport").disabled=false;
+  $("tCount").textContent=rep.onion_count;
+  $("tA").textContent=rep.grade_percent.A+"%";
+  $("tU").textContent=rep.grade_percent.URS+"%";
+  $("tR").textContent=rep.grade_percent.REJECT+"%";
+  $("bA").style.width=Math.max(rep.grade_percent.A,2)+"%";
+  $("bU").style.width=Math.max(rep.grade_percent.URS,2)+"%";
+  $("bR").style.width=Math.max(rep.grade_percent.REJECT,2)+"%";
+  $("tScale").textContent="scale: "+rep.px_per_mm+" px/mm · "+rep.scale_source+
+    " · ~"+rep.estimated_weight_kg+" kg";
+  $("liveWarn").innerHTML=(rep.warnings||[]).map(function(w){
+    return '<div class="warn-box">⚠️ '+w+"</div>";}).join("");
+  /* draw boxes on the overlay canvas (coords are in the frame we sent) */
+  var cv=$("overlay"),v=$("video");
+  cv.width=rep.frame_w||960;cv.height=rep.frame_h||720;
+  var ctx=cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  (rep.onions||[]).forEach(function(o){
+    var x=o.bbox[0],y=o.bbox[1],w=o.bbox[2],h=o.bbox[3];
+    var col=CLASS_COLORS[o.label]||"#fff";
+    ctx.strokeStyle=col;ctx.lineWidth=Math.max(2,cv.width/320);
+    ctx.strokeRect(x,y,w,h);
+    var label="#"+o.id+" "+o.label+" "+o.diameter_mm+"mm "+o.grade;
+    ctx.font="600 "+Math.max(12,Math.round(cv.width/48))+"px Inter,system-ui";
+    var tw=ctx.measureText(label).width;
+    var ly=Math.max(0,y-22);
+    ctx.fillStyle="rgba(15,23,42,.82)";
+    ctx.fillRect(x,ly,tw+12,20);
+    ctx.fillStyle=col;ctx.fillText(label,x+6,ly+14);
+  });
+}
+function generateFullReport(){
+  /* prefer the sharpest recent frame - the best "photo" the camera took */
+  var fresh=bestFrame.blob&&(Date.now()-bestFrame.t<15000);
+  var pick=fresh?bestFrame.blob:lastFrameBlob;
+  if(!pick){toast("Start the camera first.");return;}
+  $("btnReport").disabled=true;
+  toast(fresh?("⏳ Building the report from the sharpest frame (quality "+
+        Math.round(bestFrame.sharp)+")…"):"⏳ Building the report…");
+  var fd=new FormData();
+  fd.append("photo",pick,"live_frame.jpg");
+  fd.append("batch_id","LIVE-"+new Date().toISOString().slice(11,19).replace(/:/g,""));
+  appendForm(fd);
+  fetch("/api/analyze",{method:"POST",body:fd})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    $("btnReport").disabled=false;
+    if(d.ok){renderResults(d);toast("✅ Full report generated below.");}
+    else{toast("❌ "+d.error,true);}
+  }).catch(function(e){$("btnReport").disabled=false;toast("❌ "+e,true);});
+}
+
+/* ================= UPLOAD FLOW ================= */
+$("photo").addEventListener("change",function(){
+  $("pickname").textContent=this.files.length?
+    "Selected: "+this.files[0].name:"No photo selected yet.";
+});
+function analyzeUpload(){
+  var input=$("photo");
+  if(!input.files.length){toast("Please add a photo first.");return;}
+  var btn=$("btn");btn.disabled=true;
+  $("status").textContent="⏳ Analyzing… (counting, measuring, grading)";
+  var fd=new FormData();fd.append("photo",input.files[0]);
+  appendForm(fd);   /* batch ID auto-generates; no coin question anymore */
+  fetch("/api/analyze",{method:"POST",body:fd})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    btn.disabled=false;$("status").textContent="";
+    if(d.ok){renderResults(d);}
+    else{$("status").innerHTML='<span style="color:#b91c1c">❌ '+d.error+"</span>";}
+  })
+  .catch(function(e){btn.disabled=false;
+    $("status").innerHTML='<span style="color:#b91c1c">❌ '+e+"</span>";});
+}
+
+/* ================= RESULTS RENDER (shared) ================= */
+function gb(cls,lbl,pct,cnt){
+  return '<div class="gb '+cls+'"><div class="lbl">'+lbl+'</div>'+
+    '<div class="pct">'+pct+'%</div><div class="cnt">'+cnt+' onions</div></div>';
+}
+function renderResults(d){
+  var r=d.rep,u=d.urls,html="";
+  html+='<div class="section-head"><div class="badge"><span class="dot"></span>'+
+    (r.detector?("RESULT · "+r.detector):"RESULT · CLASSIC CV PIPELINE")+'</div>'+
+    '<h2 class="section-title">Batch <span class="grad-text">'+r.batch_id+"</span></h2></div>";
+
+  html+='<div class="card" style="padding:1.5rem">';
+  html+='<div class="meta-chips">'+
+    "<div>🕒 <b>"+r.timestamp+"</b></div>"+
+    "<div>🧅 Onions: <b>"+r.onion_count+"</b></div>"+
+    "<div>✂️ Watershed splits: <b>"+r.watershed_splits+"</b></div>"+
+    "<div>📏 <b>"+r.px_per_mm+" px/mm</b> · "+r.scale_source+"</div></div>";
+  (r.warnings||[]).forEach(function(w){
+    html+='<div class="warn-box">⚠️ '+w+"</div>";});
+  html+='<div class="grade-bars">'+
+    gb("a","Grade A · 45–65 mm",r.grade_percent.A,r.grade_counts.A)+
+    gb("u","Grade URS · 35–70 mm",r.grade_percent.URS,r.grade_counts.URS)+
+    gb("r","Reject",r.grade_percent.REJECT,r.grade_counts.REJECT)+
+    (r.grade_counts.CHECK?gb("c","Check · partly hidden",r.grade_percent.CHECK||0,r.grade_counts.CHECK):"")+
+    "</div>";
+  /* layer-by-layer analysis */
+  if(r.layer_analysis&&r.layer_analysis.layers&&r.layer_analysis.layers.length){
+    html+='<div style="margin-top:1.1rem;padding:1rem;background:rgba(0,82,255,.04);'+
+      'border:1px solid rgba(0,82,255,.22);border-radius:12px">'+
+      '<h3 style="font:600 1rem var(--font-body);margin-bottom:.5rem">🥞 Layer-by-layer (pile depth)</h3>';
+    r.layer_analysis.layers.forEach(function(L){
+      html+='<div class="stat-chips" style="margin:.4rem 0">'+
+        '<div><b>'+L.layer+'</b> · '+L.name+'</div>'+
+        '<div>onions <b>'+L.count+'</b></div>'+
+        '<div>A <b>'+L.grade_percent.A+'%</b></div>'+
+        '<div>URS <b>'+L.grade_percent.URS+'%</b></div>'+
+        '<div>Rej <b>'+L.grade_percent.REJECT+'%</b></div>'+
+        '<div>Check <b>'+(L.grade_percent.CHECK||0)+'%</b></div>'+
+        '<div>~<b>'+L.est_weight_kg+' kg</b></div>'+
+        '<div>avg ⌀ <b>'+L.avg_diameter_mm+' mm</b></div></div>';
+    });
+    html+='<p class="hint" style="margin-top:.5rem">ℹ️ '+r.layer_analysis.note+'</p></div>';
+  }
+
+  var st=r.diameter_stats||{};
+  html+='<div class="stat-chips">'+
+    "<div>diameter min <b>"+st.min+" mm</b></div>"+
+    "<div>median <b>"+st.median+" mm</b></div>"+
+    "<div>mean <b>"+st.mean+" mm</b></div>"+
+    "<div>max <b>"+st.max+" mm</b></div>"+
+    "<div>spread σ <b>"+st.std+" mm</b></div></div>";
+  /* quantity + coverage */
+  html+='<div class="stat-chips">'+
+    "<div>⚖ est. total weight <b>~ "+r.estimated_weight_kg+" kg</b>"+
+    (r.bags_50kg!=null?(" (~"+r.bags_50kg+" × 50-kg bags)"):"")+"</div>"+
+    (r.coverage_percent!=null?"<div>🧅 onions cover <b>"+r.coverage_percent+"%</b> of the photo</div>":"")+
+    "<div class='mono' style='font-size:.62rem'>model: mass=k·d³ (k="+r.weight_k+", calibratable)</div></div>";
+  /* quality flags */
+  (r.quality_flags||[]).forEach(function(f){
+    html+='<div class="warn-box">🔎 '+f+"</div>";});
+  /* human summary */
+  if(r.summary){html+='<p style="font-size:.88rem;margin:.9rem 0 .2rem;padding:.8rem 1rem;background:rgba(0,82,255,.05);border:1px solid rgba(0,82,255,.2);border-radius:10px">📝 '+r.summary+"</p>";}
+  html+="</div>";
+
+  /* annotated + report card */
+  if(u&&u.annotated){
+    html+='<div class="res-2col">'+
+      '<div class="card" style="padding:1.2rem"><h3 style="font:600 1rem var(--font-body);margin-bottom:.4rem">🖼 Annotated photo</h3>'+
+      '<a href="'+u.annotated+'" target="_blank"><img class="result-img" src="'+u.annotated+'"></a></div>'+
+      '<div class="card" style="padding:1.2rem"><h3 style="font:600 1rem var(--font-body);margin-bottom:.4rem">🎴 Report card</h3>'+
+      '<a href="'+u.card+'" target="_blank"><img class="result-img" src="'+u.card+'"></a></div></div>';
+  }
+
+  /* histogram + table */
+  html+='<div class="res-2col">';
+  html+='<div class="card" style="padding:1.2rem"><h3 style="font:600 1rem var(--font-body);margin-bottom:.6rem">📊 Size distribution</h3>';
+  html+=histogram(r.onions);
+  html+='<div style="margin-top:.8rem">';
+  Object.keys(r.class_counts).forEach(function(c){
+    html+=chip(c+" "+r.class_counts[c],CLASS_COLORS[c])+" ";});
+  html+="</div></div>";
+
+  html+='<div class="card" style="padding:1.2rem;overflow-x:auto"><h3 style="font:600 1rem var(--font-body);margin-bottom:.6rem">📋 Per-onion detail</h3><table><tr>'+
+    "<th>#</th><th>Class</th><th>⌀ mm</th><th>Grade</th><th>Layer</th><th>green%</th><th>brown%</th><th>dark%</th><th>texture</th></tr>";
+  r.onions.forEach(function(o){
+    html+="<tr><td>"+o.id+"</td><td>"+chip(o.label,CLASS_COLORS[o.label])+"</td>"+
+      "<td><b>"+o.diameter_mm+"</b></td>"+
+      '<td style="font-weight:700;color:'+(GC[o.grade]||"#475569")+'">'+o.grade+"</td>"+
+      "<td>"+(o.layer||"—")+(o.visibility!=null?(' <span class="mono" style="font-size:.6rem;color:var(--muted-foreground)">vis '+(100*o.visibility).toFixed(0)+'%</span>'):"")+"</td>"+
+      "<td>"+(100*o.features.green).toFixed(1)+"</td>"+
+      "<td>"+(100*o.features.brown).toFixed(1)+"</td>"+
+      "<td>"+(100*o.features.dark).toFixed(1)+"</td>"+
+      "<td>"+(o.texture_std!=null?o.texture_std:"—")+"</td></tr>";
+  });
+  html+="</table></div></div>";
+
+  /* downloads */
+  if(u&&u.annotated){
+    html+='<div class="card" style="padding:1.2rem;margin-top:1.4rem">'+
+      '<h3 style="font:600 1rem var(--font-body);margin-bottom:.3rem">⬇ Download the digital report</h3>';
+    if(u.full){
+      html+='<p class="hint" style="margin-bottom:.6rem">The <b>Full report (JPEG)</b> is one photo-'+
+        'file with the WHOLE report inside - photo, grades, quantity, layers, table, '+
+        'disclaimer. Perfect for WhatsApp or printing.</p>'+
+        '<a href="'+u.full+'" target="_blank"><img class="result-img" src="'+u.full+'" '+
+        'style="max-width:340px" alt="full report"></a>';
+    }
+    html+='<div class="dl">'+
+      (u.full?'<a href="'+u.full+'" download>⭐ Full report (JPEG)</a>':'')+
+      '<a href="'+u.annotated+'" download>Annotated image</a>'+
+      '<a href="'+u.card+'" download>Report card</a>'+
+      '<a href="'+u.txt+'" download>Text report</a>'+
+      '<a href="'+u.json+'" download>JSON report</a></div></div>';
+  }
+  html+='<div style="text-align:center;margin-top:1.4rem">'+
+    '<button class="btn btn-outline" onclick="document.getElementById(\'results\').scrollIntoView({behavior:\'smooth\'})">↑ back to top</button></div>';
+
+  var res=$("results");
+  res.innerHTML=html;res.style.display="block";
+  res.scrollIntoView({behavior:"smooth"});
+}
+function histogram(onions){
+  if(!onions||!onions.length){return '<p class="hint">No onions.</p>';}
+  var bins=[{l:"< 35 mm (undersized)",n:0,c:"#0284c7"},
+            {l:"35–45 mm",n:0,c:"#d97706"},
+            {l:"45–65 mm (Grade A)",n:0,c:"#16a34a"},
+            {l:"> 65 mm",n:0,c:"#dc2626"}];
+  onions.forEach(function(o){
+    var d=o.diameter_mm;
+    if(d<35)bins[0].n++;else if(d<45)bins[1].n++;
+    else if(d<=65)bins[2].n++;else bins[3].n++;});
+  var max=Math.max.apply(null,bins.map(function(b){return b.n}))||1;
+  var html="";
+  bins.forEach(function(b){
+    html+='<div style="display:flex;align-items:center;gap:.6rem;margin:.45rem 0">'+
+      '<div style="width:130px;font:500 .68rem var(--font-mono);color:var(--muted-foreground)">'+b.l+"</div>"+
+      '<div style="flex:1;background:var(--muted);border-radius:6px;height:16px;overflow:hidden">'+
+      '<div style="width:'+Math.round(100*b.n/max)+'%;height:100%;background:'+b.c+'"></div></div>'+
+      '<div class="mono" style="width:24px;text-align:right;font-size:.72rem">'+b.n+"</div></div>";
+  });
+  return html;
+}
+
+/* ---- detect "static preview" context and show setup instructions ---- */
+  (function(){
+    var inIframe=false;
+    try{inIframe=(window.self!==window.top);}catch(e){inIframe=true;}
+    var noCam=!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+    if(inIframe||noCam){
+      var n=document.getElementById("setupNote");
+      if(n)n.style.display="block";
+    }
+  })();
+
+/* friendlier camera failure message */
+var _oldStart=startCamera;
+startCamera=function(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    var n=document.getElementById("setupNote");
+    if(n)n.style.display="block";
+    toast("📷 Camera is unavailable here. If you are in a preview pane, run "+
+          "python app.py and open http://localhost:8000 in a normal tab.",true);
+    return;
+  }
+  return _oldStart.apply(this,arguments);
+};
+
+/* friendlier network failure message */
+var _origFetch=window.fetch.bind(window);
+window.fetch=function(url,opts){
+  return _origFetch(url,opts).catch(function(err){
+    var n=document.getElementById("setupNote");
+    if(n)n.style.display="block";
+    toast("🔌 Cannot reach the server ("+url+"). You are probably in a static "+
+          "preview — open http://localhost:8000 in a real browser tab.",true);
+    throw err;
+  });
+};
+
+/* load YOLO availability once */
+fetch("/api/mode-info").then(function(r){return r.json()}).then(function(info){
+  if(info.yolo_ready){toast("⚡ YOLOv8 onion model detected — you can enable it in the top bar.");}
+}).catch(function(){});
+</script>
+<script src="/assets/three.min.js"></script>
+<script>
+/* ================= 3D HERO + DEPTH MICRO-INTERACTIONS =================
+   A real-time onion built from translucent lathe "shells" with a glowing
+   #0052FF core - the app's whole metaphor, interactive. If WebGL or the
+   3D library is unavailable (e.g. sandboxed preview), we gracefully keep
+   the AI-generated concept image instead. */
+(function(){
+  var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- subtle 3D tilt on cards (desktop pointers only) ---- */
+  if(!reduce && matchMedia("(pointer: fine)").matches){
+    document.querySelectorAll(".card").forEach(function(c){
+      c.classList.add("tiltable");
+      c.addEventListener("mousemove", function(e){
+        var r = c.getBoundingClientRect();
+        var x = (e.clientX - r.left) / r.width  - .5;
+        var y = (e.clientY - r.top)  / r.height - .5;
+        c.style.transform = "perspective(900px) rotateX(" + (-y*3).toFixed(2) +
+                            "deg) rotateY(" + (x*3).toFixed(2) + "deg) translateY(-2px)";
+      });
+      c.addEventListener("mouseleave", function(){ c.style.transform = ""; });
+    });
+  }
+
+  /* ---- the 3D onion ---- */
+  var stage = document.getElementById("stage3d");
+  if(!stage || !window.THREE) return;                 /* keep image fallback */
+  var renderer;
+  try{
+    renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  }catch(e){ return; }                                /* no WebGL -> fallback */
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  stage.appendChild(renderer.domElement);
+  stage.insertAdjacentHTML("beforeend",
+    '<div class="stage-hint">DRAG TO ROTATE</div>');
+
+  document.getElementById("heroFallback").style.display = "none";
+  stage.style.display = "block";
+
+  var scene  = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(38, 1, .1, 100);
+  camera.position.set(0, .18, 5.3);
+  var onion = new THREE.Group();
+  scene.add(onion);
+
+  /* onion profile curve -> lathe geometry (a surface of revolution) */
+  function profile(R, H, n){
+    var pts = [];
+    for(var i = 0; i <= n; i++){
+      var t = i / n;
+      pts.push(new THREE.Vector2(
+        R * Math.pow(Math.sin(Math.PI * t), .68),
+        (t - .5) * H
+      ));
+    }
+    return pts;
+  }
+
+  /* translucent inner shells - clearer toward the core */
+  var shells = [[1.00,.16],[.87,.13],[.74,.10],[.61,.08],[.48,.06],[.36,.05]];
+  shells.forEach(function(s, idx){
+    var geo = new THREE.LatheGeometry(profile(1.18*s[0], 2.5*s[0], 48), 64);
+    var cream = new THREE.Color(0xf5ead8);
+    var icy   = new THREE.Color(0xd9e6ff);
+    var col   = cream.clone().lerp(icy, idx / (shells.length - 1));
+    var mat = new THREE.MeshPhongMaterial({color:col, transparent:true,
+      opacity:s[1], side:THREE.DoubleSide, depthWrite:false,
+      shininess:90, specular:0x99bbff});
+    onion.add(new THREE.Mesh(geo, mat));
+  });
+
+  /* golden outer skin, partially "peeled" (phiLength < full circle) */
+  var skin = new THREE.Mesh(
+    new THREE.LatheGeometry(profile(1.18, 2.5, 48), 64, Math.PI*.62, Math.PI*1.5),
+    new THREE.MeshPhongMaterial({color:0xd08a2f, transparent:true, opacity:.97,
+      side:THREE.DoubleSide, shininess:26, specular:0x6b5a33}));
+  onion.add(skin);
+  var skin2 = new THREE.Mesh(
+    new THREE.LatheGeometry(profile(1.13, 2.42, 48), 64, Math.PI*.5, Math.PI*.78),
+    new THREE.MeshPhongMaterial({color:0xb5761f, transparent:true, opacity:.55,
+      side:THREE.DoubleSide, shininess:20, specular:0x5a4a28}));
+  onion.add(skin2);
+
+  /* two papery peel curls spiraling off the top */
+  [[.62, .55, .9], [.5, .78, -.7]].forEach(function(c){
+    var curl = new THREE.Mesh(
+      new THREE.TorusGeometry(c[0], .05, 10, 42, Math.PI*1.25),
+      new THREE.MeshPhongMaterial({color:0xdda445, side:THREE.DoubleSide,
+        shininess:18, specular:0x6b5a33}));
+    curl.position.set(.32*c[2], 1.28 + c[1]*.4, .12*c[2]);
+    curl.rotation.set(Math.PI*.42*c[2], .5*c[2], Math.PI*.15);
+    onion.add(curl);
+  });
+
+  /* glowing core: small emissive sphere + halo sprite + blue point light */
+  var core = new THREE.Mesh(new THREE.SphereGeometry(.17, 24, 24),
+    new THREE.MeshBasicMaterial({color:0x2f7bff}));
+  onion.add(core);
+  var cv = document.createElement("canvas"); cv.width = cv.height = 128;
+  var g = cv.getContext("2d"),
+      gr = g.createRadialGradient(64,64,0,64,64,64);
+  gr.addColorStop(0,  "rgba(60,120,255,.85)");
+  gr.addColorStop(.35,"rgba(0,82,255,.38)");
+  gr.addColorStop(1,  "rgba(0,82,255,0)");
+  g.fillStyle = gr; g.fillRect(0,0,128,128);
+  var glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map:new THREE.CanvasTexture(cv), transparent:true,
+    blending:THREE.AdditiveBlending, depthWrite:false}));
+  glow.scale.set(2.6, 2.6, 1);
+  onion.add(glow);
+  onion.add(new THREE.PointLight(0x0052ff, 2.4, 7, 2));
+
+  /* studio lighting: warm key upper-right, cool blue rim lower-left */
+  scene.add(new THREE.AmbientLight(0xffffff, .38));
+  var key = new THREE.DirectionalLight(0xffdfae, 1.05); key.position.set(3,4,2.5);
+  scene.add(key);
+  var rim = new THREE.DirectionalLight(0x4d8bff, .95); rim.position.set(-4,-1.5,-2.5);
+  scene.add(rim);
+  var fill = new THREE.PointLight(0x9db9ff, .3); fill.position.set(-3,-2,3);
+  scene.add(fill);
+
+  /* faint ambient dust particles */
+  var pgeo = new THREE.BufferGeometry(), pn = 130, pos = new Float32Array(pn*3);
+  for(var i = 0; i < pn; i++){
+    var th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1),
+        r = 2.1 + Math.random()*1.7;
+    pos[i*3]   = r*Math.sin(ph)*Math.cos(th);
+    pos[i*3+1] = r*Math.cos(ph)*.7;
+    pos[i*3+2] = r*Math.sin(ph)*Math.sin(th);
+  }
+  pgeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  var dust = new THREE.Points(pgeo, new THREE.PointsMaterial({
+    color:0x8fb0ff, size:.022, transparent:true, opacity:.5, depthWrite:false}));
+  scene.add(dust);
+
+  /* drag to rotate (with inertia), gentle auto-rotate + float */
+  var tRX = -.06, tRY = .35, cRX = tRX, cRY = tRY, drag = false, px = 0, py = 0;
+  stage.addEventListener("pointerdown", function(e){
+    drag = true; px = e.clientX; py = e.clientY; stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", function(e){
+    if(!drag) return;
+    tRY += (e.clientX - px) * .008;
+    tRX = Math.max(-.7, Math.min(.7, tRX + (e.clientY - py) * .006));
+    px = e.clientX; py = e.clientY;
+  });
+  addEventListener("pointerup", function(){ drag = false; });
+
+  function resize(){
+    var w = stage.clientWidth, h = stage.clientHeight;
+    if(!w || !h) return;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  resize();
+  if(window.ResizeObserver) new ResizeObserver(resize).observe(stage);
+  else addEventListener("resize", resize);
+
+  /* save battery: render only when visible + tab is active */
+  var visible = true;
+  if(window.IntersectionObserver)
+    new IntersectionObserver(function(en){ visible = en[0].isIntersecting; })
+      .observe(stage);
+
+  var t0 = performance.now();
+  (function loop(now){
+    requestAnimationFrame(loop);
+    if(!visible || document.hidden) return;
+    var t = (now || performance.now()) - t0;
+    if(!drag && !reduce) tRY += .0035;               /* slow auto-rotate */
+    cRX += (tRX - cRX) * .08;
+    cRY += (tRY - cRY) * .08;
+    onion.rotation.set(cRX, cRY, 0);
+    onion.position.y = reduce ? 0 : Math.sin(t * .0011) * .07;
+    dust.rotation.y  = -t * .00004;
+    glow.material.opacity = .8 + Math.sin(t * .0018) * .12;  /* core "breathes" */
+    renderer.render(scene, camera);
+  })(t0);
+})();
+</script>
+<script>
+/* ================= HINDI / ENGLISH TOGGLE =================
+   One small dictionary; every element with data-i18n gets its text
+   swapped. Your choice is remembered in localStorage. Honest note:
+   report FILES (JSON/TXT/JPEG) stay English for machine-readability. */
+var I18N = {
+  en:{tab_live:"◉ Live Scan", tab_upload:"⬆ Upload Photo",
+      cta_live:"Start Live Scan", cta_upload:"Upload a photo",
+      start:"▶ Start camera", pause:"⏸ Pause", flip:"🔄 Flip",
+      torch:"🔦 Torch", upload_b:"Add photo of the onion batch",
+      upload_s:"On the phone this opens the camera · JPG / PNG / WEBP",
+      analyze:"🔍 Analyze Batch", fullrep:"⭐ Generate Full Report",
+      honest:"Visible surface analysis only — a normal photo cannot detect internal rot, internal damage or internal moisture. No accuracy is claimed until measured on a labeled test set.",
+      q_dark:"TOO DARK — USE TORCH", q_bright:"TOO BRIGHT",
+      q_blur:"HOLD STEADY — BLURRY", q_good:"GOOD ✓ SHARP ",
+      pill_live:"LIVE", pill_paused:"PAUSED"},
+  hi:{tab_live:"◉ लाइव स्कैन", tab_upload:"⬆ फोटो अपलोड करें",
+      cta_live:"लाइव स्कैन शुरू करें", cta_upload:"फोटो अपलोड करें",
+      start:"▶ कैमरा चालू करें", pause:"⏸ रोकें", flip:"🔄 घुमाएँ",
+      torch:"🔦 टॉर्च", upload_b:"प्याज़ की फसल की फोटो जोड़ें",
+      upload_s:"फ़ोन पर यह कैमरा खोलता है · JPG / PNG / WEBP",
+      analyze:"🔍 बैच जाँचें", fullrep:"⭐ पूरी रिपोर्ट बनाएँ",
+      honest:"केवल बाहरी सतह की जाँच — सामान्य फोटो से अंदरूनी सड़न, क्षति या नमी नहीं पाई जा सकती। जब तक असली डेटा पर जाँच न हो, कोई दावा नहीं।",
+      q_dark:"बहुत अंधेरा — टॉर्च जलाएँ", q_bright:"बहुत तेज़ रोशनी",
+      q_blur:"स्थिर रखें — धुंधला है", q_good:"बढ़िया ✓ शार्प ",
+      pill_live:"चालू", pill_paused:"रुका हुआ"}
+};
+var LANG = localStorage.getItem("og_lang") || "en";
+function t(k){ return (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k; }
+function applyLang(){
+  document.querySelectorAll("[data-i18n]").forEach(function(el){
+    var k = el.getAttribute("data-i18n");
+    if(I18N[LANG][k] !== undefined) el.innerHTML = I18N[LANG][k];
+  });
+  var b = document.getElementById("langToggle");
+  if(b) b.textContent = (LANG === "en") ? "हिं" : "EN";
+}
+function toggleLang(){
+  LANG = (LANG === "en") ? "hi" : "en";
+  localStorage.setItem("og_lang", LANG);
+  applyLang();
+}
+document.addEventListener("DOMContentLoaded", applyLang);
+</script>
+</body>
+</html>
