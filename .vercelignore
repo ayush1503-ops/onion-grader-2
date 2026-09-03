@@ -1,0 +1,27 @@
+# Vercel deployment ignores
+# ------------------------------------------------------------------
+# WHY: Vercel's Python builder auto-detects a uv project whenever it
+# sees `uv.lock` + `pyproject.toml` and force-runs:
+#     uv sync --active --no-dev --link-mode hardlink --frozen --no-editable
+# That frozen uv path fails in the Vercel build. This project deploys
+# with plain pip + requirements.txt (see vercel.json "installCommand").
+# Hiding the uv-only files from the Vercel build makes the builder fall
+# back to `pip install -r requirements.txt`, which is reliable and is
+# what the pinned 250 MB-friendly requirements.txt was made for.
+#
+# NOTE: these files stay in Git and still work for local uv workflows —
+# they are only excluded from the Vercel build/upload context.
+uv.lock
+pyproject.toml
+
+# uv virtualenvs / caches (never uploaded anyway, but be explicit)
+.venv
+__pypackages__
+
+# Heavy dev / training artifacts not needed by the serverless function.
+test_images/
+runs/
+models/
+dataset/
+uploads/
+outputs/

@@ -44,6 +44,20 @@ Keeps the app online 24/7 on a free tier. HTTPS included
 (**required** for camera access on phones — Level 0 has this problem
 solved automatically).
 
+### Vercel (serverless)
+
+This repo ships `api/index.py` + `vercel.json` for Vercel. It installs
+with **plain pip from `requirements.txt`**.
+
+⚠️ If a Vercel build fails with
+`Failed to run "uv sync --active --no-dev --link-mode hardlink --frozen --no-editable"`,
+that's Vercel's builder auto-detecting the `uv.lock`/`pyproject.toml`
+files and forcing its uv path (which ignores our `installCommand`).
+The fix is already in place: `.vercelignore` excludes `uv.lock` and
+`pyproject.toml` from the build so Vercel falls back to
+`pip install -r requirements.txt`. Don't remove those entries — and you
+can still use `uv` locally; the files stay in Git.
+
 ### Render.com (free, easiest)
 1. Put the project on **GitHub** (create a repo, upload the folder —
    do NOT upload `uploads/`, `outputs/`, `models/`, `runs/` — add a
