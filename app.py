@@ -44,16 +44,24 @@ import yolo_mode
 # Basic setup
 # ------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# On serverless hosts (Vercel) only /tmp is writable -> override via env.
+SERVERLESS = bool(
+    os.environ.get("VERCEL")
+    or os.environ.get("VERCEL_ENV")
+    or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+)
+if SERVERLESS:
+    os.environ.setdefault("VERCEL", "1")
+    os.environ.setdefault("UPLOAD_DIR", "/tmp/uploads")
+    os.environ.setdefault("OUTPUT_DIR", "/tmp/outputs")
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(BASE_DIR, "outputs"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024   # max upload 16 MB
+app.config["MAX_CONTENT_LENGTH"] = (
+    4 * 1024 * 1024 if SERVERLESS else 16 * 1024 * 1024
+)
 
 # Same coin menu as grader.py
 COIN_MENU = {"10": 27.0, "2": 27.0, "5": 23.0, "1": 22.0}
