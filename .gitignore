@@ -7,3 +7,5 @@ snapshot_*.jpg
 labels_log_*.csv
 __pycache__/
 *.pyc
+pyproject.toml
+uv.lock

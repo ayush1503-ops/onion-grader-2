@@ -24,3 +24,8 @@ outputs/
 __pypackages__/
 __pycache__/
 *.pyc
+
+# Never let a local uv project leak into the Vercel build.
+# If these files are present, Vercel force-runs `uv sync` instead of pip.
+pyproject.toml
+uv.lock
