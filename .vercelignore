@@ -1,16 +1,4 @@
 # Vercel deployment ignores
-# ------------------------------------------------------------------
-# This project deploys with plain pip from requirements.txt.
-#
-# The uv-only files (uv.lock + pyproject.toml) were REMOVED from the
-# repo on purpose. Vercel's Python runtime auto-detects those files and
-# force-runs its own:
-#     uv sync --active --no-dev --link-mode hardlink --frozen --no-editable
-# which fails in Vercel's build and ignores our pip installCommand.
-# With no uv.lock/pyproject.toml present, Vercel falls back to the
-# reliable `pip install -r requirements.txt` (the pinned, small deps).
-# All runtime dependencies stay listed in requirements.txt.
-
 # Heavy dev / training artifacts not needed by the serverless function.
 test_images/
 runs/
@@ -25,7 +13,5 @@ __pypackages__/
 __pycache__/
 *.pyc
 
-# Never let a local uv project leak into the Vercel build.
-# If these files are present, Vercel force-runs `uv sync` instead of pip.
-pyproject.toml
-uv.lock
+# Local dev files
+*.log

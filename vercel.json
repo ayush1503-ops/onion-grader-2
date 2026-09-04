@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app.py": {
-      "includeFiles": "{app_page.html,frontend/**,offline/**}"
+      "includeFiles": "{app_page.html,frontend/**,offline/**,onion_grader/**}",
+      "runtime": "python3.11"
     }
   }
 }

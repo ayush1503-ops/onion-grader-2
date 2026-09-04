@@ -11,4 +11,4 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
-        value: 3.13.4
+        value: 3.11.11
