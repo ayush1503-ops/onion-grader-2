@@ -327,6 +327,22 @@ def health():
     return jsonify({"status": "ok", "app": "onion-quality-grader"})
 
 
+@app.errorhandler(413)
+def upload_too_large(e):
+    """Photo bigger than MAX_CONTENT_LENGTH -> friendly JSON, not an HTML
+    error page (the page's JavaScript only understands JSON).
+
+    Why the limit: Vercel's serverless functions hard-reject request
+    bodies over 4.5 MB, so SERVERLESS mode caps uploads at 4 MB. The
+    web page shrinks big phone photos in the browser before sending
+    (see shrinkPhoto in app_page.html), so real users never see this."""
+    limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    return jsonify({"ok": False,
+                    "error": f"Photo too large (max {limit_mb} MB on this "
+                             "host). Use a smaller/compressed photo, or the "
+                             "LIVE CAMERA mode."}), 413
+
+
 # ------------------------------------------------------------------
 # Start the server
 # ------------------------------------------------------------------

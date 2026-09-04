@@ -109,6 +109,32 @@ local `pip install -r requirements.txt` both work. `pyproject.toml`
 lists the same 5 pinned deps (Flask, opencv-headless, numpy, pillow,
 waitress) for uv.
 
+#### Pre-flight checks for Vercel (audited & verified)
+
+- **Bundle size:** the 5 pinned deps measure ~229 MB installed
+  (+ ~12 MB code/assets ≈ 241 MB) — under the 250 MB function limit.
+- **`.vercelignore`** keeps heavy non-runtime folders out of the upload:
+  `onion-opencv-course/` (128 MB), `image-search/`, `dataset*/`,
+  `runs/`, `models/`, and model checkpoints (`*.pt`, `*.h5`, `*.pth`,
+  `*.onnx`).
+- **`vercel.json`:** `memory: 2048` (bigger CPU share → faster image
+  analysis) and `maxDuration: 60` (a big photo must not time out).
+- **Read-only filesystem:** with `VERCEL=1` app.py writes uploads and
+  reports to `/tmp`, and embeds every report file into the JSON
+  response as a `data:` URI — download links can never break across
+  invocations.
+- **Big phone photos (5–20 MB):** the web page now downscales them in
+  the browser before upload (Vercel itself rejects request bodies over
+  4.5 MB). If one still slips through, the server answers friendly
+  JSON (`{"ok": false, ...}` with 413), never a raw HTML error page.
+- **YOLO on Vercel:** honestly OFF. torch/ultralytics would blow the
+  250 MB limit, so the app detects the missing model, `/api/mode-info`
+  says so, and the classic-CV pipeline keeps working. Run YOLO locally
+  or on a Render-style host.
+- **End-to-end:** all 7 `test_images/` photos were analyzed
+  successfully against a simulated serverless runtime
+  (`VERCEL=1`, `/tmp` upload/output dirs, data-URI responses).
+
 ### Render.com (free, easiest)
 1. Put the project on **GitHub** (create a repo, upload the folder —
    do NOT upload `uploads/`, `outputs/`, `models/`, `runs/` — add a

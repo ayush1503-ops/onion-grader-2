@@ -2,7 +2,9 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app.py": {
-      "includeFiles": "{app_page.html,frontend/**,offline/**,onion_grader/**,**/*.py}"
+      "includeFiles": "{app_page.html,frontend/**,offline/**,onion_grader/**,**/*.py}",
+      "memory": 2048,
+      "maxDuration": 60
     }
   }
 }

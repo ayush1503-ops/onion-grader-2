@@ -880,15 +880,42 @@ $("photo").addEventListener("change",function(){
   $("pickname").textContent=this.files.length?
     "Selected: "+this.files[0].name:"No photo selected yet.";
 });
+function shrinkPhoto(file){
+  /* Big phone photos (often 5-20 MB) would be rejected by the server
+     (4 MB limit on Vercel). We downscale them IN THE BROWSER to at most
+     2000 px / ~85% JPEG - same visible quality, ~10x smaller upload.
+     Note: re-encoding drops EXIF (camera distance scale) - only used
+     for photos that would otherwise fail entirely. */
+  if(file.size<3.0*1024*1024){return Promise.resolve(file);}
+  return new Promise(function(res){
+    var img=new Image(),U=window.URL||window.webkitURL;
+    img.onload=function(){
+      try{
+        var MAX=2000,sc=Math.min(1,MAX/Math.max(img.width,img.height));
+        var c=document.createElement("canvas");
+        c.width=Math.round(img.width*sc);c.height=Math.round(img.height*sc);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        U.revokeObjectURL(img.src);
+        c.toBlob(function(b){res(b||file);},"image/jpeg",0.85);
+      }catch(e){res(file);}
+    };
+    img.onerror=function(){res(file);};
+    img.src=U.createObjectURL(file);
+  });
+}
 function analyzeUpload(){
   var input=$("photo");
   if(!input.files.length){toast("Please add a photo first.");return;}
   var btn=$("btn");btn.disabled=true;
   $("status").textContent="⏳ Analyzing… (counting, measuring, grading)";
-  var fd=new FormData();fd.append("photo",input.files[0]);
-  appendForm(fd);   /* batch ID auto-generates; no coin question anymore */
-  fetch("/api/analyze",{method:"POST",body:fd})
-  .then(function(r){return r.json()})
+  shrinkPhoto(input.files[0]).then(function(photo){
+    var fd=new FormData();fd.append("photo",photo,input.files[0].name);
+    appendForm(fd);   /* batch ID auto-generates; no coin question anymore */
+    return fetch("/api/analyze",{method:"POST",body:fd});
+  })
+  .then(function(r){
+    return r.json().catch(function(){throw new Error("Server error "+r.status);});
+  })
   .then(function(d){
     btn.disabled=false;$("status").textContent="";
     if(d.ok){renderResults(d);}
