@@ -35,7 +35,7 @@ from werkzeug.utils import secure_filename
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, make_response
 
 import grader
 import yolo_mode
@@ -204,10 +204,15 @@ def file_urls(rep):
 # ------------------------------------------------------------------
 @app.route("/")
 def home():
-    """The one and only page (form + JavaScript that renders results)."""
+    """The one and only page (form + JavaScript that renders results).
+    no-cache: the HTML is small and edits are frequent - browsers must
+    always revalidate so users never see a stale design after a deploy."""
     with open(os.path.join(BASE_DIR, "app_page.html"), "r",
               encoding="utf-8") as fh:
-        return fh.read()
+        page = fh.read()
+    resp = make_response(page)
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
 
 
 @app.route("/api/analyze", methods=["POST"])
