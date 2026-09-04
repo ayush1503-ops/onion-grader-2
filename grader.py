@@ -67,6 +67,8 @@ MERGED_FACTOR     = 1.3    # blob area > 1.3 x median  -> maybe 2 touching onion
 CIRC_SPLIT_MAX    = 0.75   # ...and circularity < 0.75 (not round) -> try split
 COIN_CIRC_MIN     = 0.80   # a coin must be very round
 COIN_AREA_MAX     = 0.60   # ...and much smaller than a typical onion
+COIN_SAT_MAX      = 90     # ...and metallic: mean saturation this low
+                           # (onion skin sits around 100-140, metal ~0)
 # Seed-level sweep for watershed. The original spec range (0.60 -> 0.35)
 # gives strong, fat seeds and is tried FIRST. If no level gives exactly
 # 2 seed islands (e.g. morphology rounded the "waist" between two
@@ -182,44 +184,70 @@ def fill_holes(mask):
     return cv2.bitwise_or(mask, holes)
 
 
-def refine_local_otsu(gray, contour, pad=15):
+def refine_local_otsu(gray, contour, pad=15, hsv=None):
     """
     Tighten a rough candidate region with a LOCAL Otsu threshold on its
     crop (auto light/dark polarity per crop). Returns a cleaner contour
     in full-image coordinates, or the original candidate.
+
+    When colour is available the SATURATION channel is tried FIRST:
+    shadows shift brightness but not colourfulness, so on a crop that
+    straddles a light/shadow seam (where onion and background can share
+    the same brightness) saturation still cuts cleanly. Brightness is
+    the fallback for grey-on-grey cases.
     """
     x, y, w, h = cv2.boundingRect(contour)
     H, W = gray.shape
     x0, y0 = max(0, x - pad), max(0, y - pad)
     x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
-    crop = gray[y0:y1, x0:x1]
-    m = mask_from_gray(crop)
-    cnts = get_blobs(m)
-    if not cnts:
-        return contour
     cx, cy = x + w // 2 - x0, y + h // 2 - y0
-    best, best_a = None, 0.0
-    for c in cnts:
-        if cv2.pointPolygonTest(c, (float(cx), float(cy)), False) >= 0:
-            a = cv2.contourArea(c)
-            if a > best_a:
-                best, best_a = c, a
-    if best is None or best_a < 0.25 * w * h:
-        return contour                      # local cut did not agree
-    return best + np.array([x0, y0])
+
+    def pick(channel):
+        crop = channel[y0:y1, x0:x1]
+        cnts = get_blobs(mask_from_gray(crop))
+        best, best_a = None, 0.0
+        for c in cnts:
+            if cv2.pointPolygonTest(c, (float(cx), float(cy)), False) >= 0:
+                a = cv2.contourArea(c)
+                if a > best_a:
+                    best, best_a = c, a
+        if best is None or best_a < 0.25 * w * h or best_a > 1.6 * w * h:
+            return None                 # local cut did not agree
+        return best + np.array([x0, y0])
+
+    if hsv is not None:
+        sat = pick(hsv[:, :, 1])
+        if sat is not None:
+            return sat
+    lum = pick(gray)
+    if lum is not None:
+        return lum
+    return contour
 
 
-def local_contrast_mask(gray):
+def local_contrast_mask(gray, hsv=None):
     """
     Mask of everything that differs from its LOCAL surroundings.
     |gray - blurred| > 15 catches darker AND brighter onions (the plain
     divide-by-blur trick clips bright objects into the background).
     Only the onion RIM survives the first cut (interiors match their own
     blur), so we close gaps and flood-fill the interiors into solid disks.
+
+    A SECOND, illumination-proof cue is unioned in when colour is given:
+    |saturation - blurred saturation|. A shadow changes brightness but
+    not colourfulness, so this ring stays CLOSED even where a shadow is
+    exactly as bright as the onion rim - the case that opens gaps in the
+    brightness ring and chops shadow-side onions into fragments.
     """
     bg = cv2.GaussianBlur(gray, (0, 0), 51)
     diff = cv2.absdiff(gray, bg)
     _, m = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+    if hsv is not None:
+        sat = hsv[:, :, 1]
+        sbg = cv2.GaussianBlur(sat, (0, 0), 51)
+        sdiff = cv2.absdiff(sat, sbg)
+        _, ms = cv2.threshold(sdiff, 25, 255, cv2.THRESH_BINARY)
+        m = cv2.bitwise_or(m, ms)
     k = np.ones(MORPH_K, np.uint8)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=3)
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=2)
@@ -585,7 +613,11 @@ def exif_focal_px(image_path, image_width_px):
 # ------------------------------------------------------------------
 def find_coin(blobs, hsv, median_area):
     """
-    A coin is: very round (circ >= 0.80) AND small (area < 0.6 x median).
+    A coin is: very round (circ >= 0.80), small (area < 0.6 x median)
+    AND METAL - clearly less colourful than the onion skins in the same
+    photo. Without the colour gate a photo with NO coin "eats" its
+    smallest onion as a fake coin (a small onion is round and small
+    too), which silently poisons the mm scale.
     If several blobs qualify, pick the LEAST colourful one - a coin is
     metallic gray (low saturation), onions are warm-coloured.
     Returns a dict, or None if no coin was found.
@@ -601,8 +633,14 @@ def find_coin(blobs, hsv, median_area):
         cv2.drawContours(m, [c], -1, 255, -1)
         return float(cv2.mean(hsv[:, :, 1], m)[0])
 
-    cands.sort(key=mean_saturation)
-    coin = cands[0]
+    sats = [mean_saturation(c) for c in cands]
+    med_sat = float(np.median([mean_saturation(c) for c in blobs]))
+    kept = [(c, s) for c, s in zip(cands, sats)
+            if s <= COIN_SAT_MAX or s <= 0.45 * med_sat]
+    if not kept:
+        return None                     # nothing metallic -> no coin
+    kept.sort(key=lambda t: t[1])
+    coin = kept[0][0]
     (cx, cy), r = cv2.minEnclosingCircle(coin)
     return {"contour": coin, "center": (int(cx), int(cy)),
             "d_px": 2.0 * float(r)}
@@ -1272,7 +1310,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     if suspicious:
         # local-contrast pass: catches dark AND bright onions under
         # uneven lighting (global Otsu merges one of them into the bg)
-        mask_lc = local_contrast_mask(gray)
+        mask_lc = local_contrast_mask(gray, hsv)
         cand = get_blobs(mask_lc)
         deduped, boxes = [], []
         for c in cand:
@@ -1289,7 +1327,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             # Otsu cut, then de-duplicate once more
             refined, rboxes = [], []
             for c in deduped:
-                rc = refine_local_otsu(gray, c)
+                rc = refine_local_otsu(gray, c, hsv=hsv)
                 a = cv2.contourArea(rc)
                 if a < MIN_AREA_PX:
                     continue
