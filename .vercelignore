@@ -1,0 +1,17 @@
+# Vercel deployment ignores
+# Heavy dev / training artifacts not needed by the serverless function.
+test_images/
+runs/
+models/
+dataset/
+uploads/
+outputs/
+
+# Python caches
+.venv/
+__pypackages__/
+__pycache__/
+*.pyc
+
+# Local dev files
+*.log

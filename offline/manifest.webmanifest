@@ -1,0 +1,13 @@
+{
+  "name": "Onion Grader - Offline",
+  "short_name": "OnionGrader",
+  "description": "AI onion quality grading that runs fully offline. SIH26031.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#FAFAFA",
+  "theme_color": "#0052FF",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

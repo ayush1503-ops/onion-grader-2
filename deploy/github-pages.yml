@@ -1,0 +1,57 @@
+# Publishes the OFFLINE phone app (offline/ folder, pure HTML/JS PWA)
+# to GitHub Pages - free static HTTPS hosting, which is exactly what
+# the PWA needs (camera access requires HTTPS).
+#
+# ACTIVATE ONCE (GitHub forbids bots/App tokens from adding workflow
+# files, so a human moves this file into place - 10 seconds):
+#   1. mkdir -p .github/workflows
+#      git mv deploy/github-pages.yml .github/workflows/pages.yml
+#      git commit -m "ci: enable GitHub Pages deploy" && git push
+#      (or upload this file to .github/workflows/ via the GitHub web UI)
+#   2. Repo Settings -> Pages -> Build and deployment ->
+#      Source: "GitHub Actions".
+# Then every push to main (or a manual run of this workflow) deploys
+# to https://<user>.github.io/<repo>/
+#
+# The Python server app (app.py / api.py) cannot run on Pages - see
+# DEPLOY.md Level 2 for Render/Vercel, which deploy from this same repo.
+name: Deploy offline PWA to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "offline/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload offline app as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: offline
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

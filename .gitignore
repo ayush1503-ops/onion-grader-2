@@ -1,0 +1,10 @@
+uploads/
+outputs/
+runs/
+models/
+dataset/
+snapshot_*.jpg
+labels_log_*.csv
+__pycache__/
+*.pyc
+.venv/

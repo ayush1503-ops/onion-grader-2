@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<!-- =================================================================
+ OFFLINE ONION GRADER - PWA (SIH26031)
+ Everything runs ON THE DEVICE with OpenCV.js (WebAssembly).
+ NO server, NO internet needed after the first load.
+ Install: serve this folder once (or the Flask app /offline/),
+ open it, "Add to Home Screen" - done.
+
+ HONESTY: visible surface analysis only. Cannot detect internal rot,
+ damage or moisture. Weight is a calibratable estimate (mass = k·d³).
+================================================================= -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0052FF">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="favicon.png">
+<title>OnionGrader Offline — works without internet</title>
+<style>
+:root{--bg:#FAFAFA;--fg:#0F172A;--mut:#64748B;--acc:#0052FF;--acc2:#4D7CFF;
+  --bd:#E2E8F0;--card:#fff;--grad:linear-gradient(135deg,#0052FF,#4D7CFF);
+  --fd:"Calistoga",Georgia,serif;--fb:"Inter",system-ui,sans-serif;
+  --fm:"JetBrains Mono",ui-monospace,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--fb);line-height:1.6}
+header{background:var(--grad);color:#fff;padding:14px 16px;display:flex;
+  align-items:center;gap:.7rem}
+header .logo{width:38px;height:38px;border-radius:11px;background:rgba(255,255,255,.18);
+  display:grid;place-items:center;font-size:1.2rem}
+header b{font-size:1.02rem}header small{display:block;font-size:.68rem;opacity:.85;
+  font-family:var(--fm);letter-spacing:.08em}
+main{max-width:720px;margin:0 auto;padding:14px}
+.badge{display:inline-flex;align-items:center;gap:.5rem;border-radius:999px;
+  border:1px solid rgba(0,82,255,.3);background:rgba(0,82,255,.05);
+  padding:.35rem .85rem;font:500 .66rem var(--fm);text-transform:uppercase;
+  letter-spacing:.14em;color:var(--acc)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--acc);
+  animation:pu 2s infinite}@keyframes pu{50%{transform:scale(1.35);opacity:.6}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;
+  padding:16px;margin:12px 0;box-shadow:0 4px 6px rgba(0,0,0,.07)}
+h2{font:400 1.25rem var(--fd);margin-bottom:.5rem}
+label{display:block;font-weight:600;font-size:.8rem;margin:.7rem 0 .3rem}
+select{width:100%;padding:.6rem;border:1px solid var(--bd);border-radius:9px;
+  font:.95rem var(--fb);background:#fff}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
+  border-radius:11px;padding:.7rem 1.2rem;font:600 .9rem var(--fb);cursor:pointer;
+  border:1px solid transparent;transition:all .2s;min-height:46px;width:100%}
+.btn:active{transform:scale(.98)}
+.btn-p{background:var(--grad);color:#fff;box-shadow:0 4px 14px rgba(0,82,255,.25)}
+.btn-p:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn-o{background:#fff;border-color:var(--bd);color:var(--fg)}
+.btn[disabled]{opacity:.5;cursor:wait}
+.filebtn{display:block;text-align:center;padding:18px 10px;border:2px dashed rgba(0,82,255,.4);
+  border-radius:12px;cursor:pointer;background:rgba(0,82,255,.03);font-weight:700}
+.filebtn input{display:none}
+.hint{font-size:.72rem;color:var(--mut);margin-top:.4rem}
+#boot{position:fixed;inset:0;background:var(--bg);z-index:99;display:grid;
+  place-items:center;text-align:center;padding:20px}
+#boot .eng{font:400 1.6rem var(--fd);margin:.6rem 0}
+.spin{width:34px;height:34px;border:3px solid rgba(0,82,255,.2);
+  border-top-color:var(--acc);border-radius:50%;margin:0 auto .8rem;
+  animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+#errbox{display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;
+  border-radius:10px;padding:12px;font-size:.8rem;margin-top:10px;text-align:left}
+.cam{position:relative;border-radius:12px;overflow:hidden;background:#0F172A;
+  aspect-ratio:4/3;display:none}
+.cam video,.cam canvas{position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover}
+.pill{position:absolute;top:8px;left:8px;background:rgba(15,23,42,.78);color:#fff;
+  border-radius:999px;padding:.3rem .7rem;font:500 .62rem var(--fm);
+  letter-spacing:.1em;display:flex;gap:.4rem;align-items:center}
+.count-big{font:400 2.6rem var(--fd);line-height:1}
+.gb{display:flex;align-items:center;gap:.6rem;margin:.45rem 0;font-size:.78rem;font-weight:600}
+.gb .bar{flex:1;height:12px;border-radius:6px;background:#F1F5F9;overflow:hidden}
+.gb .bar div{height:100%;border-radius:6px;transition:width .5s}
+.gb .v{font:500 .7rem var(--fm);color:var(--mut);min-width:64px;text-align:right}
+table{width:100%;border-collapse:collapse;font-size:.72rem}
+th{background:#0F172A;color:#fff;padding:.4rem;text-align:left;
+  font:500 .6rem var(--fm);letter-spacing:.06em}
+td{padding:.35rem .4rem;border-bottom:1px solid var(--bd)}
+.chip{display:inline-block;padding:.1rem .5rem;border-radius:999px;color:#fff;
+  font-weight:700;font-size:.62rem}
+.kg{background:rgba(0,82,255,.06);border:1px solid rgba(0,82,255,.22);border-radius:10px;
+  padding:.7rem .9rem;font-size:.8rem;margin:.7rem 0}
+.kg b{color:var(--acc)}
+.warnb{background:#fef9c3;border:1px solid #fde047;color:#713f12;border-radius:9px;
+  padding:.5rem .7rem;font-size:.72rem;margin:.45rem 0}
+.dl{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.7rem}
+.dl a,.dl button{background:#0F172A;color:#fff;border:0;border-radius:9px;
+  padding:.55rem .8rem;font:600 .72rem var(--fb);cursor:pointer;text-decoration:none}
+.dl a:hover,.dl button:hover{background:var(--acc)}
+.disc{background:#0F172A;color:#fff;border-radius:14px;padding:14px;
+  font-size:.72rem;line-height:1.6;position:relative;overflow:hidden;margin-top:12px}
+.disc::before{content:"";position:absolute;inset:0;opacity:.05;
+  background-image:radial-gradient(circle,#fff 1px,transparent 1px);background-size:26px 26px}
+footer{position:fixed;bottom:0;left:0;right:0;background:#ffeb9c;color:#7a3e00;
+  font-size:.62rem;text-align:center;padding:5px 8px;z-index:5}
+</style>
+</head>
+<body>
+
+<!-- ============ BOOT SCREEN (while the AI engine loads) ============ -->
+<div id="boot">
+  <div>
+    <div class="spin"></div>
+    <div class="eng">🧅 OnionGrader <span style="color:#0052FF">Offline</span></div>
+    <div id="bootTxt" style="font-size:.8rem;color:#64748B">Loading the AI engine
+      (OpenCV, runs on your device)…</div>
+    <div id="errbox"></div>
+  </div>
+</div>
+
+<header>
+  <div class="logo"><img src="icon-192.png" alt="" style="width:30px;height:30px;
+       border-radius:8px;object-fit:cover"></div>
+  <div><b>OnionGrader <span id="netTag" style="opacity:.8"></span></b>
+    <small>SIH26031 · RUNS ON THIS DEVICE · NO INTERNET NEEDED</small></div>
+</header>
+
+<main>
+  <div id="stage3d" style="height:220px;border-radius:16px;margin-bottom:12px;
+       position:relative;overflow:hidden;background:radial-gradient(120% 140% at 70% 20%,
+       #ffffff, #eef2ff 70%, #e6ecff);border:1px solid var(--bd);cursor:grab"></div>
+  <!-- ============ CAPTURE ============ -->
+  <div class="card">
+    <div class="badge"><span class="dot"></span>CAPTURE</div>
+    <div class="cam" id="camWrap" style="margin-top:.8rem">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="pill"><span class="dot" style="background:#22c55e"></span><span id="pillTxt">SCANNING…</span></div>
+    </div>
+    <label class="filebtn" for="photo" id="filebtn" style="margin-top:.8rem">
+      📷 Add photo of the onion batch
+      <input type="file" id="photo" accept="image/*" capture="environment">
+    </label>
+    <div style="display:flex;gap:.5rem;margin-top:.6rem">
+      <button class="btn btn-o" id="btnCam" onclick="startCam()">▶ Use camera (live)</button>
+      <button class="btn btn-o" id="btnStop" onclick="stopCam()" style="display:none">⏹ Stop camera</button>
+    </div>
+
+    <div class="hint" style="margin-top:.8rem;background:rgba(0,82,255,.05);
+         border:1px solid rgba(0,82,255,.2);border-radius:10px;padding:.6rem .8rem">
+      🪙 <b>Nothing to set — automatic.</b> A coin in the photo is detected
+      by itself (assumed ₹10/₹2 = 27&nbsp;mm). No coin? Sizes become honest
+      estimates (you'll see a ⚠️ warning). One layer of onions · light OR
+      dark background both work.
+    </div>
+  </div>
+
+  <!-- ============ RESULTS ============ -->
+  <div class="card" id="resCard" style="display:none">
+    <div class="badge"><span class="dot"></span>RESULT · ON-DEVICE AI</div>
+    <div style="display:flex;align-items:baseline;gap:.6rem;margin:.6rem 0">
+      <div class="count-big" id="rCount">0</div>
+      <div style="font-size:.78rem;color:#64748B">onions detected<br><span id="rMeta" class="hint"></span></div>
+    </div>
+    <div id="rFlags"></div>
+    <div class="gb"><span style="color:#15803d">Grade A</span>
+      <div class="bar"><div id="bA" style="background:linear-gradient(90deg,#15803d,#22c55e)"></div></div>
+      <span class="v" id="vA">0%</span></div>
+    <div class="gb"><span style="color:#b45309">Grade URS</span>
+      <div class="bar"><div id="bU" style="background:linear-gradient(90deg,#b45309,#f59e0b)"></div></div>
+      <span class="v" id="vU">0%</span></div>
+    <div class="gb"><span style="color:#b91c1c">Reject</span>
+      <div class="bar"><div id="bR" style="background:linear-gradient(90deg,#b91c1c,#ef4444)"></div></div>
+      <span class="v" id="vR">0%</span></div>
+    <div id="rLayers"></div>
+    <div class="kg" id="rWeight"></div>
+    <div style="overflow-x:auto"><table id="rTable"></table></div>
+    <div class="dl">
+      <button id="dlFull" onclick="makeFullJpg()">⭐ Full report (JPEG)</button>
+      <a id="dlPng" download="onion_annotated.png">⬇ Annotated image</a>
+      <a id="dlJson" download="onion_report.json">⬇ JSON</a>
+      <a id="dlTxt" download="onion_report.txt">⬇ Text report</a>
+    </div>
+    <p class="hint">⭐ = one JPEG photo with the WHOLE report inside
+    (photo + grades + quantity + layers + table + disclaimer) —
+    perfect for WhatsApp or printing.</p>
+  </div>
+
+  <div class="disc">
+    <b>Honest capabilities.</b> This app grades VISIBLE SURFACE quality only —
+    a normal photo cannot detect internal rot, internal damage or internal
+    moisture. Weight is an ESTIMATE (mass ≈ k·d³, calibrate the constant once
+    with a scale). Thresholds are demo starting points; real accuracy must be
+    measured on a labeled test set. All analysis happens on this device —
+    your photos never leave it.
+  </div>
+</main>
+
+<footer>Visible surface analysis only — cannot detect internal rot / damage / moisture</footer>
+
+<!-- The AI engine: local file, ~10 MB, loads once then is cached offline.
+     The error handler is defined BEFORE this tag so it always exists. -->
+<script>
+function engineFailed(){
+  document.getElementById("bootTxt").innerHTML=
+    "<b style='color:#b91c1c'>AI engine file not found.</b>";
+  var eb=document.getElementById("errbox");eb.style.display="block";
+  eb.innerHTML="This offline app needs <b>opencv.js</b> in the same folder "+
+    "(included in the project <span style='font-family:monospace'>offline/</span> folder). "+
+    "First-time setup with internet: open this page once online so the browser caches it, "+
+    "or run <span style='font-family:monospace'>python -m http.server 8080</span> in the "+
+    "offline folder and visit <span style='font-family:monospace'>http://localhost:8080</span>.";
+}
+</script>
+<script src="opencv.js" onerror="engineFailed()"></script>
+<script>
+"use strict";
+/* ================================================================
+   PIPELINE - the same logic as grader.py, ported to OpenCV.js.
+   gray -> blur -> Otsu (auto light/dark background) -> morphology
+   -> contours -> watershed (split touching) -> coin ruler
+   -> HSV features -> rules -> grades -> weight -> report
+   ================================================================ */
+var CLASS_COLORS={GOOD:"#16a34a",DAMAGED:"#d97706",ROTTEN:"#dc2626",
+  SPROUTED:"#c026d3",UNDERSIZED:"#0284c7"};
+var WEIGHT_K=0.00051;           // mass_g = k * d_mm^3 (calibrate!)
+var MIN_AREA=1500, BLUR=7, MORPH=7, BORDER_PX=12;
+var SWEEP_MAIN=[0.60,0.55,0.50,0.45,0.40,0.35];
+var SWEEP_EXTRA=[0.85,0.80,0.75,0.70,0.65];
+var MIN_PIECE_FRAC=0.30;
+
+var cvReady=false, camStream=null, camTimer=null, camBusy=false;
+var lastResult=null, lastPng=null;
+var mats=[];                    // track Mats so we can free memory
+
+function M(){var m=new cv.Mat();mats.push(m);return m;}
+
+/* ---------- basic helpers ---------- */
+function circOf(cnt){
+  var per=cv.arcLength(cnt,true);
+  if(!per)return 0;
+  return 4*Math.PI*cv.contourArea(cnt)/(per*per);
+}
+function objectMask(bgr){
+  var gray=M(),blur=M(),mask=M();
+  cv.cvtColor(bgr,gray,cv.COLOR_BGR2GRAY);
+  var k=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(MORPH,MORPH));
+  mats.push(k);
+  cv.GaussianBlur(gray,blur,new cv.Size(BLUR,BLUR),0);
+  /* sense the background from the photo BORDER (auto light/dark).
+     We sample border pixels directly in JS (fast enough at <=1200px). */
+  var h=gray.rows,w=gray.cols;
+  var b=Math.max(2,Math.min(BORDER_PX,h>>3,w>>3));
+  var sum=0,n=0,data=gray.data;
+  for(var y=0;y<h;y++){
+    var inY=(y<b||y>=h-b);
+    for(var x=0;x<w;x++){
+      if(inY||x<b||x>=w-b){sum+=data[y*w+x];n++;}
+    }
+  }
+  var borderMean=sum/Math.max(1,n);
+  var th=M();mats.push(th);
+  var otsuT=cv.threshold(blur,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+  if(borderMean>=otsuT){
+    /* light background -> onions are DARKER -> keep the dark side */
+    cv.threshold(blur,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+  }else{
+    /* dark background -> onions are BRIGHTER -> keep the bright side */
+    cv.threshold(blur,th,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+  }
+  cv.morphologyEx(th,mask,cv.MORPH_CLOSE,k,new cv.Point(-1,-1),2);
+  cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k,new cv.Point(-1,-1),2);
+  return {gray:gray,mask:mask};
+}
+function getBlobs(mask){
+  var cnts=new cv.MatVector(),hier=M();mats.push(hier);mats.push(cnts);
+  cv.findContours(mask,cnts,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  var keep=[];
+  for(var i=0;i<cnts.size();i++){
+    var c=cnts.get(i);
+    if(cv.contourArea(c)>=MIN_AREA)keep.push(c.clone());
+  }
+  cnts.delete();
+  return keep;
+}
+function watershedSplit(bgr,cnt){
+  var m=M();m.create(bgr.rows,bgr.cols,cv.CV_8UC1);m.setTo(new cv.Scalar(0));
+  var one=new cv.MatVector();one.push_back(cnt);
+  cv.drawContours(m,one,0,new cv.Scalar(255),-1);one.delete();
+  var area=cv.contourArea(cnt);
+  var sureBg=M();
+  var k3=cv.Mat.ones(3,3,cv.CV_8U);mats.push(k3);
+  cv.dilate(m,sureBg,k3,new cv.Point(-1,-1),3);
+  var dist=M();cv.distanceTransform(m,dist,cv.DIST_L2,5);
+  var maxD=1;                                       // max of dist
+  var dd=dist.data32F;for(var i=0;i<dd.length;i++)if(dd[i]>maxD)maxD=dd[i];
+  var fg=M(),fg8=M(),labels=M(),seedOK=false,seedLabels=null;
+  mats.push(fg8);
+  var sweep=SWEEP_MAIN.concat(SWEEP_EXTRA);
+  for(var s=0;s<sweep.length;s++){
+    cv.threshold(dist,fg,sweep[s]*maxD,255,cv.THRESH_BINARY);
+    fg.convertTo(fg8,cv.CV_8U);                     // connectedComponents needs 8-bit
+    var n=cv.connectedComponents(fg8,labels);
+    if(n-1===2){seedOK=true;seedLabels=labels.clone();mats.push(seedLabels);break;}
+  }
+  if(!seedOK){return [cnt];}
+  var unknown=M();cv.subtract(sureBg,fg,unknown);
+  var markers=M();                                  // CV_32S
+  seedLabels.convertTo(markers,cv.CV_32S);
+  var add=M();add.create(markers.rows,markers.cols,cv.CV_32S);add.setTo(new cv.Scalar(1));
+  cv.add(markers,add,markers);                      // labels+1 (bg=1, seeds=2,3)
+  var unk8=M();unknown.convertTo(unk8,cv.CV_8U);
+  markers.setTo(new cv.Scalar(0),unk8);             // 0 = watershed decides
+  cv.watershed(bgr,markers);
+  var m8=M();markers.convertTo(m8,cv.CV_8U);
+  var out=[];
+  [2,3].forEach(function(lab){
+    var piece=M(),p2=M();
+    cv.threshold(m8,piece,lab-0.5,255,cv.THRESH_BINARY);
+    cv.threshold(m8,p2,lab+0.5,255,cv.THRESH_BINARY_INV);
+    cv.bitwise_and(piece,p2,piece);
+    var pc=new cv.MatVector(),ph=M();mats.push(ph);
+    cv.findContours(piece,pc,ph,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+    for(var i=0;i<pc.size();i++){
+      var c=pc.get(i);
+      if(cv.contourArea(c)>=MIN_AREA)out.push(c.clone());
+    }
+    pc.delete();piece.delete();p2.delete();
+  });
+  if(out.length===2){
+    var smallest=Math.min(cv.contourArea(out[0]),cv.contourArea(out[1]));
+    if(smallest>=MIN_PIECE_FRAC*area)return out;
+  }
+  return [cnt];
+}
+function coinSat(hsv,c){                 // mean saturation inside contour
+  var m=M();m.create(hsv.rows,hsv.cols,cv.CV_8UC1);m.setTo(new cv.Scalar(0));
+  var v=new cv.MatVector();v.push_back(c);
+  cv.drawContours(m,v,0,new cv.Scalar(255),-1);v.delete();
+  var mean=M(),sd=M();mats.push(mean);mats.push(sd);
+  cv.meanStdDev(hsv,mean,sd,m);          // mean per HSV channel
+  m.delete();
+  return mean.data64F[1];                // channel 1 = S (coins are gray)
+}
+function featuresInside(gray,hsv,mask){
+  var total=cv.countNonZero(mask);
+  if(total===0)return {green:0,brown:0,dark:0};
+  var lower,upper,out=M(),inter=M();mats.push(out);mats.push(inter);
+  var size=new cv.Size(hsv.cols,hsv.rows);
+  function frac(l,u){
+    lower=new cv.Mat(size,hsv.type(),new cv.Scalar(l[0],l[1],l[2],0));
+    upper=new cv.Mat(size,hsv.type(),new cv.Scalar(u[0],u[1],u[2],0));
+    cv.inRange(hsv,lower,upper,out);lower.delete();upper.delete();
+    cv.bitwise_and(out,mask,inter);
+    return cv.countNonZero(inter)/total;
+  }
+  var green=frac([35,60,40,0],[85,255,255,0]);       // green shoot
+  var brown=frac([8,60,0,0],[25,255,160,0]);         // dark brown skin
+  var darkM=M();mats.push(darkM);
+  cv.threshold(gray,darkM,70,255,cv.THRESH_BINARY_INV);
+  cv.bitwise_and(darkM,mask,inter);
+  var dark=cv.countNonZero(inter)/total;
+  return {green:green,brown:brown,dark:dark};
+}
+function classify(f,dmm,fullVisible){
+  if(f.green>=0.02)return "SPROUTED";
+  if(f.dark>=0.12||f.brown>=0.40)return "ROTTEN";
+  if(f.dark>=0.04||f.brown>=0.15)return "DAMAGED";
+  if(fullVisible&&dmm<35)return "UNDERSIZED";
+  return "GOOD";
+}
+function gradeOf(label,dmm,fullVisible){
+  if(label!=="GOOD")return "REJECT";
+  if(!fullVisible)return "CHECK";   /* partly hidden: size not fair */
+  if(dmm>=45&&dmm<=65)return "A";
+  if(dmm>=35&&dmm<=70)return "URS";
+  return "REJECT";
+}
+function weightOf(dmm){return WEIGHT_K*dmm*dmm*dmm;}
+
+/* ---------- FULL ANALYSIS (mirrors grader.analyze) ---------- */
+function analyzeAll(bgr,coinMm){
+  var om=objectMask(bgr),gray=om.gray,mask=om.mask;
+  var hsv=M();cv.cvtColor(bgr,hsv,cv.COLOR_BGR2HSV);
+  var blobs=getBlobs(mask);
+  var result={onions:[],warnings:[],flags:[],splits:0};
+  if(!blobs.length){
+    result.flags.push("No onions detected - check light/background.");
+    return result;
+  }
+  var areas=blobs.map(function(c){return cv.contourArea(c);})
+    .sort(function(a,b){return a-b;});
+  var median=areas[areas.length>>1];
+  /* split touching pairs */
+  var final=[];
+  blobs.forEach(function(c){
+    var big=cv.contourArea(c)>1.3*median,round=circOf(c)<0.75;
+    if(big&&round){
+      var pieces=watershedSplit(bgr,c);
+      if(pieces.length===2)result.splits++;
+      pieces.forEach(function(p){final.push(p);});
+    }else final.push(c);
+  });
+  /* coin ruler: round + small; tie-break = least colourful (metal) */
+  var coinCands=final.filter(function(c){
+    return circOf(c)>=0.80&&cv.contourArea(c)<0.60*median;});
+  var coin=null,pxPerMm=1,scaleTxt="no scale";
+  if(coinCands.length){
+    coinCands.sort(function(a,b){return coinSat(hsv,a)-coinSat(hsv,b);});
+    coin=coinCands[0];
+    var dpx=2*Math.sqrt(cv.contourArea(coin)/Math.PI);   // equivalent circle
+    pxPerMm=dpx/coinMm;
+    scaleTxt="coin "+coinMm+" mm";
+    final=final.filter(function(c){return c!==coin;});
+  }else{
+    /* fallback: assume median onion = 55 mm (a GUESS) */
+    var ds=final.map(function(c){return 2*Math.sqrt(cv.contourArea(c)/Math.PI);})
+      .sort(function(a,b){return a-b;});
+    pxPerMm=(ds[ds.length>>1]||110)/55;
+    scaleTxt="NO coin - assumed median onion 55 mm (sizes are GUESSES)";
+    result.warnings.push("No coin/reference found - sizes are guesses. Put a coin in the photo!");
+  }
+  /* per-onion features + classify + grade */
+  var totalPx=bgr.rows*bgr.cols,cover=0;
+  final.forEach(function(c,i){
+    var omask=M();omask.create(bgr.rows,bgr.cols,cv.CV_8UC1);omask.setTo(new cv.Scalar(0));
+    var v=new cv.MatVector();v.push_back(c);
+    cv.drawContours(omask,v,0,new cv.Scalar(255),-1);v.delete();
+    var f=featuresInside(gray,hsv,omask);
+    var area=cv.contourArea(c);
+    var dmm=2*Math.sqrt(area/Math.PI)/pxPerMm;
+    /* pile-layer cue: extent = area / convex-hull area. A full disc
+       scores ~1.0; an onion covered by others (crescent) scores low. */
+    var hull=M();mats.push(hull);
+    cv.convexHull(c,hull);
+    var hullArea=cv.contourArea(hull);
+    var vis=hullArea>0?area/hullArea:1;
+    var layer=vis>=0.80?"L1":(vis>=0.45?"L2":"L3");
+    var fullVisible=layer==="L1";
+    var label=classify(f,dmm,fullVisible);
+    var br=cv.boundingRect(c);
+    cover+=area;
+    result.onions.push({
+      id:i+1,label:label,diameter_mm:+dmm.toFixed(1),
+      grade:gradeOf(label,dmm,fullVisible),
+      layer:layer,visibility:+vis.toFixed(3),
+      diameter_note:fullVisible?null:"approximate - onion partly hidden",
+      mass_g:+weightOf(dmm).toFixed(1),
+      features:{green:+f.green.toFixed(3),brown:+f.brown.toFixed(3),dark:+f.dark.toFixed(3)},
+      bbox:[br.x,br.y,br.width,br.height]});
+    omask.delete();
+  });
+  /* quality flags (honest instrument self-test) */
+  var lap=M();cv.cvtColor(bgr,lap,cv.COLOR_BGR2GRAY);
+  var lap2=M();cv.Laplacian(lap,lap2,cv.CV_64F);
+  var mean=new cv.Mat(),sd=new cv.Mat();mats.push(mean);mats.push(sd);
+  cv.meanStdDev(lap2,mean,sd);
+  var sharp=sd.data64F[0]*sd.data64F[0];
+  if(sharp<60)result.flags.push("photo looks blurry (sharpness "+sharp.toFixed(0)+" < 60)");
+  var mvM=new cv.Mat(),mvS=new cv.Mat();mats.push(mvM);mats.push(mvS);
+  cv.meanStdDev(hsv,mvM,mvS);
+  var mv=mvM.data64F[2];
+  if(mv<60)result.flags.push("image is very dark - use more light");
+  var n=result.onions.length;
+  if(n){
+    var W=bgr.cols,H=bgr.rows;
+    var edge=result.onions.filter(function(o){
+      var b=o.bbox;return b[0]<=2||b[1]<=2||b[0]+b[2]>=W-2||b[1]+b[3]>=H-2;});
+    if(edge.length)result.flags.push("onion(s) touch the photo edge - count may be incomplete");
+  }
+  /* totals */
+  var gc={A:0,URS:0,REJECT:0,CHECK:0},cc={GOOD:0,DAMAGED:0,ROTTEN:0,SPROUTED:0,UNDERSIZED:0};
+  result.onions.forEach(function(o){gc[o.grade]++;cc[o.label]++;});
+  /* per-layer statistics */
+  var layerDefs=[["L1","Top layer (fully visible)"],["L2","Middle layer (partly covered)"],
+                 ["L3","Buried layer (mostly hidden)"]];
+  result.layers=[];
+  layerDefs.forEach(function(def){
+    var grp=result.onions.filter(function(o){return o.layer===def[0];});
+    if(!grp.length)return;
+    var lg={A:0,URS:0,REJECT:0,CHECK:0};
+    grp.forEach(function(o){lg[o.grade]++;});
+    var wkg=grp.reduce(function(s,o){return s+o.mass_g;},0)/1000;
+    var avgd=grp.reduce(function(s,o){return s+o.diameter_mm;},0)/grp.length;
+    result.layers.push({layer:def[0],name:def[1],count:grp.length,
+      grade_percent:{A:+(100*lg.A/grp.length).toFixed(1),
+                     URS:+(100*lg.URS/grp.length).toFixed(1),
+                     REJECT:+(100*lg.REJECT/grp.length).toFixed(1),
+                     CHECK:+(100*lg.CHECK/grp.length).toFixed(1)},
+      est_weight_kg:+wkg.toFixed(2),avg_diameter_mm:+avgd.toFixed(1)});
+  });
+  result.layerNote="Layer assignment is an occlusion ESTIMATE from one 2D photo. "+
+    "Onions FULLY hidden under others cannot be seen or counted by any camera.";
+  var totKg=result.onions.reduce(function(s,o){return s+o.mass_g;},0)/1000;
+  result.count=n;result.gc=gc;result.cc=cc;
+  result.gp={A:n?+(100*gc.A/n).toFixed(1):0,U:n?+(100*gc.URS/n).toFixed(1):0,
+             R:n?+(100*gc.REJECT/n).toFixed(1):0};
+  result.weightKg=+totKg.toFixed(2);result.bags=+(totKg/50).toFixed(1);
+  result.coverage=+(100*cover/totalPx).toFixed(1);
+  result.pxPerMm=+pxPerMm.toFixed(2);result.scale=scaleTxt;
+  /* plain-language summary */
+  if(!n){result.summary="No onions detected.";}
+  else{
+    var reasons=[];
+    [["ROTTEN","rotten"],["DAMAGED","damaged"],["SPROUTED","sprouted"],
+     ["UNDERSIZED","undersized"]].forEach(function(p){
+      if(cc[p[0]])reasons.push(cc[p[0]]+" "+p[1]);});
+    var topL=result.layers&&result.layers.length?(" Layers: "+result.layers.map(function(L){return L.layer+" "+L.count;}).join(" · ")+"."):"";
+    result.summary=n+" onions detected"+
+      (result.splits?(", "+result.splits+" touching group split apart"):"")+topL+
+      ". "+gc.A+" Grade A ("+result.gp.A+"%), "+gc.URS+" URS ("+result.gp.U+"%), "+
+      gc.REJECT+" reject"+(reasons.length?" - main issues: "+reasons.join(", "):"")+
+      ". Estimated total weight about "+result.weightKg+" kg. Scale from "+scaleTxt+".";
+  }
+  return result;
+}
+
+/* ================================================================
+   UI
+   ================================================================ */
+var $=function(id){return document.getElementById(id);};
+function engineFailed(){
+  $("bootTxt").innerHTML="<b style='color:#b91c1c'>AI engine file not found.</b>";
+  $("errbox").style.display="block";
+  $("errbox").innerHTML="This offline app needs <b>opencv.js</b> in the same folder "+
+    "(it is included in the project <span style='font-family:monospace'>offline/</span> folder). "+
+    "If you moved only this HTML file, copy the whole folder. "+
+    "First-time setup with internet: open this page once online so the browser caches it, "+
+    "or run <span style='font-family:monospace'>python -m http.server 8080</span> in the offline folder "+
+    "and visit <span style='font-family:monospace'>http://localhost:8080</span>.";
+}
+function bootDone(){
+  cvReady=true;
+  $("boot").style.display="none";
+  if(navigator.onLine===false)$("netTag").textContent="· OFFLINE ✓";
+  window.addEventListener("online",function(){$("netTag").textContent="";});
+  window.addEventListener("offline",function(){$("netTag").textContent="· OFFLINE ✓";});
+  if("serviceWorker" in navigator && location.protocol.match(/^https?:$/)){
+    navigator.serviceWorker.register("sw.js").catch(function(){});
+  }
+}
+function waitEngine(){
+  var tries=0;
+  (function poll(){
+    tries++;
+    if(typeof cv!=="undefined"&&cv.getBuildInformation){bootDone();return;}
+    if(tries>150){engineFailed();return;}
+    setTimeout(poll,200);
+  })();
+}
+waitEngine();
+
+function coinMm(){
+  /* coin question removed from the UI: standard Rs.10/Rs.2 = 27 mm.
+     The detector still uses the coin automatically when one is visible. */
+  return 27;
+}
+
+/* ---------- camera (secure context only: localhost/https) ---------- */
+function startCam(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    alert("Camera needs a secure context. Serve this folder via http://localhost (see setup) - "+
+          "photo upload works everywhere.");return;}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",
+      width:{ideal:1280},height:{ideal:960}},audio:false})
+  .then(function(s){
+    camStream=s;$("video").srcObject=s;
+    $("video").style.display="";          // may be hidden after a photo run
+    $("camWrap").style.display="block";$("filebtn").style.display="none";
+    $("btnStop").style.display="";$("btnCam").style.display="none";
+    if(!camTimer){camTimer=setInterval(camTick,1300);}
+  }).catch(function(e){alert("Camera error: "+e.name);});
+}
+function stopCam(){
+  if(camStream){camStream.getTracks().forEach(function(t){t.stop()});camStream=null;}
+  $("camWrap").style.display="none";$("filebtn").style.display="";
+  $("btnStop").style.display="none";$("btnCam").style.display="";
+}
+function camQuality(){          /* cheap blur/brightness meter */
+  var v=$("video");if(!v.videoWidth)return null;
+  var s=160,sc=s/v.videoWidth;
+  var c=document.createElement("canvas");
+  c.width=s;c.height=Math.round(v.videoHeight*sc);
+  var x=c.getContext("2d");x.drawImage(v,0,0,c.width,c.height);
+  var d=x.getImageData(0,0,c.width,c.height).data;
+  var n=c.width*c.height,g=new Float32Array(n),sum=0,i,p;
+  for(i=0;i<n;i++){p=i*4;g[i]=0.299*d[p]+0.587*d[p+1]+0.114*d[p+2];sum+=g[i];}
+  var mean=sum/n,vs=0,y,xx,lap;
+  for(y=1;y<c.height-1;y++)for(xx=1;xx<c.width-1;xx++){
+    i=y*c.width+xx;lap=4*g[i]-g[i-1]-g[i+1]-g[i-c.width]-g[i+c.width];
+    vs+=lap*lap;
+  }
+  return {sharp:vs/((c.width-2)*(c.height-2)),mean:mean};
+}
+function camTick(){
+  if(camBusy||!camStream)return;
+  var v=$("video");if(!v.videoWidth)return;
+  var q=camQuality();
+  if(q){
+    if(q.mean<60){$("pillTxt").textContent="TOO DARK — USE MORE LIGHT";return;}
+    if(q.sharp<30){$("pillTxt").textContent="HOLD STEADY…";return;}
+    $("pillTxt").textContent="SCANNING…";
+  }
+  camBusy=true;
+  var c=document.createElement("canvas");
+  var scale=Math.min(1,960/v.videoWidth);
+  c.width=Math.round(v.videoWidth*scale);c.height=Math.round(v.videoHeight*scale);
+  c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+  setTimeout(function(){
+    try{runAnalysis(c,"live");}
+    finally{camBusy=false;}
+  },10);
+}
+
+/* ---------- photo flow ---------- */
+$("photo").addEventListener("change",function(){
+  if(!this.files.length)return;
+  var img=new Image();
+  img.onload=function(){
+    var c=document.createElement("canvas");
+    var scale=Math.min(1,1200/img.width);
+    c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+    runAnalysis(c,"photo");
+    URL.revokeObjectURL(img.src);
+  };
+  img.src=URL.createObjectURL(this.files[0]);
+});
+
+/* ---------- the actual run ---------- */
+function runAnalysis(canvasEl,source){
+  var src=cv.imread(canvasEl);                 // RGBA
+  var bgr=M();cv.cvtColor(src,bgr,cv.COLOR_RGBA2BGR);src.delete();
+  var t0=performance.now();
+  var r=analyzeAll(bgr,coinMm());
+  var ms=Math.round(performance.now()-t0);
+  lastResult=r;lastResult.ms=ms;
+  drawOverlay(canvasEl,r,source);
+  renderResults(r,ms);
+  /* free all OpenCV working memory (important for live looping) */
+  mats.forEach(function(m){try{m.delete();}catch(e){}});
+  mats=[];
+}
+
+/* ---------- draw boxes + labels over the image ---------- */
+function drawOverlay(canvasEl,r,source){
+  var oc=$("overlay"),wrap=$("camWrap");
+  if(source==="live"){
+    oc.width=canvasEl.width;oc.height=canvasEl.height;
+    var ctx=oc.getContext("2d");
+    ctx.clearRect(0,0,oc.width,oc.height);
+    paintBoxes(ctx,r);
+  }else{
+    /* photo: show a fresh canvas with the image + boxes */
+    wrap.style.display="block";
+    var v=$("video");v.style.display="none";
+    oc.width=canvasEl.width;oc.height=canvasEl.height;
+    var ctx2=oc.getContext("2d");
+    ctx2.drawImage(canvasEl,0,0);
+    paintBoxes(ctx2,r);
+    /* PNG download of the annotated frame */
+    oc.toBlob(function(b){
+      if(lastPng)URL.revokeObjectURL(lastPng);
+      lastPng=URL.createObjectURL(b);
+      $("dlPng").href=lastPng;
+    },"image/png");
+  }
+}
+function paintBoxes(ctx,r){
+  var lw=Math.max(2,Math.round(ctx.canvas.width/320));
+  var fs=Math.max(11,Math.round(ctx.canvas.width/46));
+  r.onions.forEach(function(o){
+    var col=CLASS_COLORS[o.label];
+    ctx.strokeStyle=col;ctx.lineWidth=lw;
+    ctx.strokeRect(o.bbox[0],o.bbox[1],o.bbox[2],o.bbox[3]);
+    var txt="#"+o.id+" "+o.label+" "+o.diameter_mm+"mm "+o.grade+
+      (o.layer&&o.layer!=="L1"?" ["+o.layer+"]":"");
+    ctx.font="600 "+fs+"px Inter,system-ui,sans-serif";
+    var tw=ctx.measureText(txt).width;
+    var ly=Math.max(0,o.bbox[1]-fs-8);
+    ctx.fillStyle="rgba(15,23,42,.82)";
+    ctx.fillRect(o.bbox[0],ly,tw+10,fs+8);
+    ctx.fillStyle=col;ctx.fillText(txt,o.bbox[0]+5,ly+fs+2);
+  });
+  if(r.warnings&&r.warnings.length){
+    $("pillTxt").textContent="NO COIN - SIZES GUESSED";
+  }else{$("pillTxt").textContent="SCANNING…";}
+}
+
+/* ---------- render the results panel ---------- */
+function renderResults(r,ms){
+  $("resCard").style.display="block";
+  $("rCount").textContent=r.count;
+  $("rMeta").textContent="analyzed on-device in "+ms+" ms · "+
+    r.pxPerMm+" px/mm · "+r.scale;
+  $("bA").style.width=Math.max(r.gp.A,2)+"%";$("vA").textContent=r.gp.A+"%";
+  $("bU").style.width=Math.max(r.gp.U,2)+"%";$("vU").textContent=r.gp.U+"%";
+  $("bR").style.width=Math.max(r.gp.R,2)+"%";$("vR").textContent=r.gp.R+"%";
+  /* layer chips + check note */
+  var layHtml="";
+  (r.layers||[]).forEach(function(L){
+    layHtml+="<div class='kg' style='margin:.4rem 0'><b>"+L.layer+"</b> · "+L.name+
+      " — <b>"+L.count+"</b> onions · A "+L.grade_percent.A+"% · ~"+L.est_weight_kg+
+      " kg · avg "+L.avg_diameter_mm+" mm</div>";
+  });
+  if(r.layers&&r.layers.length){
+    layHtml+="<div class='hint'>ℹ️ "+r.layerNote+"</div>";
+  }
+  $("rLayers").innerHTML=layHtml;
+  $("rWeight").innerHTML="⚖ <b>Estimated total weight ~ "+r.weightKg+" kg</b>"+
+    " (~"+r.bags+" × 50-kg bags) · onions cover <b>"+r.coverage+"%</b> of the photo"+
+    "<br><span style='font-size:.66rem;color:#64748B'>model: mass = "+WEIGHT_K+
+    " × d³ — calibrate once with a scale (weigh 10 onions)</span>";
+  var flags=(r.flags||[]).concat(r.warnings||[]);
+  $("rFlags").innerHTML=flags.map(function(f){
+    return "<div class='warnb'>🔎 "+f+"</div>";}).join("");
+  var t="<tr><th>#</th><th>Class</th><th>⌀ mm</th><th>g</th><th>Grade</th><th>Layer</th>"+
+        "<th>green%</th><th>brown%</th><th>dark%</th></tr>";
+  r.onions.forEach(function(o){
+    t+="<tr><td>"+o.id+"</td><td><span class='chip' style='background:"+
+      CLASS_COLORS[o.label]+"'>"+o.label+"</span></td><td><b>"+o.diameter_mm+
+      "</b></td><td>"+o.mass_g+"</td><td>"+o.grade+"</td><td>"+(o.layer||"—")+
+      (o.diameter_note?" ⚠":"")+"</td><td>"+
+      (100*o.features.green).toFixed(1)+"</td><td>"+
+      (100*o.features.brown).toFixed(1)+"</td><td>"+
+      (100*o.features.dark).toFixed(1)+"</td></tr>";
+  });
+  $("rTable").innerHTML=t;
+  $("dlJson").onclick=function(){download("onion_report.json",
+    JSON.stringify(report(r),null,2),"application/json");};
+  $("dlTxt").onclick=function(){download("onion_report.txt",textReport(r),"text/plain");};
+  $("resCard").scrollIntoView({behavior:"smooth"});
+}
+function download(name,content,mime){
+  var b=new Blob([content],{type:mime});
+  var a=document.createElement("a");
+  a.href=URL.createObjectURL(b);a.download=name;a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+}
+/* ---------- one-JPEG full report (canvas 2D, fully offline) ---------- */
+function makeFullJpg(){
+  var r=lastResult;if(!r){alert("Analyze a photo first.");return;}
+  var W=1150,mg=24,inner=W-2*mg;
+  var srcC=$("overlay");                       // annotated image canvas
+  var iw=inner,ih=Math.round(srcC.height*inner/srcC.width);
+  var n=r.onions.length;
+  var H=88+ih+16+34+4*62+8+30+4*30+14;
+  if(r.layers&&r.layers.length)H+=46+34*r.layers.length+42;
+  H+=50+30*Math.max(n,1)+14;
+  var flags=(r.flags||[]).concat(r.warnings||[]);
+  if(flags.length)H+=36+26*flags.length;
+  H+=46+72+84;
+  var c=document.createElement("canvas");c.width=W;c.height=H;
+  var x=c.getContext("2d"),y=0;
+  /* header */
+  x.fillStyle="#0F172A";x.fillRect(0,0,W,88);
+  x.fillStyle="#fff";x.font="600 30px Calistoga,Georgia,serif";
+  x.fillText("ONION BATCH - FULL QUALITY REPORT",mg,44);
+  x.fillStyle="#93c5fd";x.font="500 14px 'JetBrains Mono',monospace";
+  x.fillText((new Date().toLocaleString())+"   |   "+n+" onions   |   ~"+
+    r.weightKg+" kg",mg,70);
+  y=88;
+  /* annotated photo */
+  x.drawImage(srcC,0,0,srcC.width,srcC.height,mg,y+8,iw,ih);
+  x.strokeStyle="#E2E8F0";x.strokeRect(mg-1,y+7,iw+2,ih+2);
+  y+=ih+16;
+  /* grade bars */
+  x.fillStyle="#0F172A";x.font="600 18px Inter,system-ui,sans-serif";
+  x.fillText("GRADE RESULTS",mg,y+22);y+=34;
+  var bars=[["GRADE A (45-65 mm)",r.gc.A,r.gp.A,"#15803d"],
+            ["GRADE URS (35-70 mm)",r.gc.URS,r.gp.U,"#b45309"],
+            ["REJECT",r.gc.REJECT,r.gp.R,"#b91c1c"],
+            ["CHECK (partly hidden)",r.gc.CHECK||0,r.gp.CHECK||0,"#334155"]];
+  bars.forEach(function(b){
+    x.fillStyle="#F1F5F9";rr(x,mg,y+2,inner,44,8);x.fill();
+    if(b[2]>0||b[1]>0){x.fillStyle=b[3];
+      rr(x,mg,y+2,Math.max(60,inner*0.62*b[2]/100),44,8);x.fill();
+      x.fillStyle="#fff";x.fillText(b[0],mg+12,y+30);}
+    else{x.fillStyle="#94a3b8";x.fillText(b[0],mg+12,y+30);}
+    x.fillStyle=(b[2]>0||b[1]>0)?"#334155":"#94a3b8";
+    x.font="600 18px Inter,system-ui,sans-serif";
+    x.fillText(b[1]+" onions  |  "+b[2]+"%",mg+inner-190,y+30);
+    y+=62;});
+  y+=8;
+  /* quantity */
+  x.fillStyle="#0F172A";x.font="600 18px Inter,system-ui,sans-serif";
+  x.fillText("QUANTITY (estimated)",mg,y+20);y+=30;
+  ["total weight ~ "+r.weightKg+" kg  (~"+r.bags+" x 50-kg bags)",
+   "onions cover "+r.coverage+"% of the photo",
+   "scale: "+r.pxPerMm+" px/mm  ["+r.scale+"]"].forEach(function(q){
+    x.fillStyle="#0052FF";x.beginPath();x.arc(mg+5,y+11,3.5,0,7);x.fill();
+    x.fillStyle="#334155";x.font="400 15px Inter,system-ui,sans-serif";
+    x.fillText(q,mg+18,y+16);y+=30;});
+
+  y+=14;
+  /* layers */
+  if(r.layers&&r.layers.length){
+    x.fillStyle="#0F172A";x.font="600 18px Inter,system-ui,sans-serif";
+    x.fillText("LAYER-BY-LAYER (occlusion estimate)",mg,y+20);y+=40;
+    r.layers.forEach(function(L){
+      x.fillStyle="#dbeafe";rr(x,mg,y,inner,28,6);x.fill();
+      x.fillStyle="#1e3a8a";x.font="500 14px 'JetBrains Mono',monospace";
+      x.fillText(L.layer+"  "+L.name+":  "+L.count+" onions | A "+L.grade_percent.A+
+        "% | ~"+L.est_weight_kg+" kg | avg "+L.avg_diameter_mm+" mm",mg+10,y+19);
+      y+=34;});
+    x.fillStyle="#64748b";x.font="400 12px Inter,system-ui,sans-serif";
+    x.fillText("i "+r.layerNote,mg,y+18);y+=42;}
+  /* table */
+  x.fillStyle="#0F172A";x.font="600 18px Inter,system-ui,sans-serif";
+  x.fillText("PER-ONION DETAIL",mg,y+20);y+=36;
+  var cols=[mg+4,mg+46,mg+210,mg+330,mg+430,mg+540];
+  var heads=["#","class","diameter","grade","layer","vis%"];
+  x.fillRect(mg,y-2,inner,24);
+  x.fillStyle="#fff";x.font="500 13px 'JetBrains Mono',monospace";
+  heads.forEach(function(hd,i){x.fillText(hd,cols[i],y+14);});
+  y+=30;
+  r.onions.forEach(function(o,i){
+    if(i%2===0){x.fillStyle="#F1F5F9";x.fillRect(mg,y-2,inner,24);}
+    x.fillStyle="#1e293b";x.font="500 13px 'JetBrains Mono',monospace";
+    var row=[String(o.id),o.label,o.diameter_mm+" mm",o.grade,
+             o.layer||"-",(100*(o.visibility==null?1:o.visibility)).toFixed(0)+"%"];
+    row.forEach(function(v2,i2){x.fillText(v2,cols[i2],y+2);});
+    y+=30;});
+  y+=14;
+  /* flags + summary */
+  if(flags.length){
+    x.fillStyle="#b45309";x.font="600 15px Inter,system-ui,sans-serif";
+    x.fillText("IMAGE QUALITY FLAGS",mg,y+16);y+=36;
+    x.fillStyle="#92400e";x.font="400 15px Inter,system-ui,sans-serif";
+    flags.forEach(function(fl){x.fillText("! "+fl,mg+6,y);y+=26;});}
+  x.fillStyle="#0F172A";x.font="600 18px Inter,system-ui,sans-serif";
+  x.fillText("SUMMARY",mg,y+16);y+=40;
+  x.fillStyle="#334155";x.font="400 15px Inter,system-ui,sans-serif";
+  wrap(x,r.summary,mg+6,y,inner-12,24);y+=72;
+  /* disclaimer */
+  x.fillStyle="#fff7ed";x.fillRect(0,H-84,W,84);
+  x.fillStyle="#7c2d12";x.font="400 12px Inter,system-ui,sans-serif";
+  x.fillText("VISIBLE SURFACE ANALYSIS ONLY - a normal photo cannot detect internal rot, internal damage or internal moisture.",mg,H-56);
+  x.fillText("Demo thresholds - real accuracy must be measured on a labeled test set. Weight is a calibratable estimate.",mg,H-36);
+  x.fillText("OnionGrader Offline - SIH26031",mg,H-16);
+  /* download */
+  c.toBlob(function(b){
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(b);a.download="onion_full_report.jpg";a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+  },"image/jpeg",0.9);
+}
+function rr(x,px,py,w,h,rad){x.beginPath();x.moveTo(px+rad,py);
+  x.arcTo(px+w,py,px+w,py+h,rad);x.arcTo(px+w,py+h,px,py+h,rad);
+  x.arcTo(px,py+h,px,py,rad);x.arcTo(px,py,px+w,py,rad);x.closePath();}
+function wrap(x,text,px,py,maxW,lh){
+  var words=String(text).split(" "),line="",yy=py;
+  words.forEach(function(wd){
+    var t=line?line+" "+wd:wd;
+    if(x.measureText(t).width<=maxW){line=t;}
+    else{x.fillText(line,px,yy);yy+=lh;line=wd;}});
+  if(line)x.fillText(line,px,yy);
+}
+function report(r){
+  return {batch_id:"OFFLINE-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-"),
+    timestamp:new Date().toLocaleString(),engine:"OpenCV.js (on-device, offline)",
+    onion_count:r.count,grade_counts:r.gc,grade_percent:r.gp,class_counts:r.cc,
+    watershed_splits:r.splits,px_per_mm:r.pxPerMm,scale_source:r.scale,
+    estimated_weight_kg:r.weightKg,bags_50kg:r.bags,coverage_percent:r.coverage,
+    weight_k:WEIGHT_K,quality_flags:r.flags,warnings:r.warnings,summary:r.summary,
+    layer_analysis:{layers:r.layers,note:r.layerNote},
+    onions:r.onions,
+    disclaimer:"VISIBLE SURFACE ANALYSIS ONLY - a normal photo cannot detect internal rot, internal damage or internal moisture. Accuracy must be measured on a labeled test set."};
+}
+function textReport(r){
+  var L=[];
+  L.push("==============================================");
+  L.push(" ONION QUALITY REPORT (offline, on-device)");
+  L.push("==============================================");
+  L.push(" date     : "+new Date().toLocaleString());
+  L.push(" engine   : OpenCV.js (runs on this device)");
+  L.push(" onions   : "+r.count+"  (watershed splits: "+r.splits+")");
+  L.push(" scale    : "+r.pxPerMm+" px/mm  ["+r.scale+"]");
+  L.push("----------------------------------------------");
+  L.push(" GRADES   A: "+r.gc.A+" ("+r.gp.A+"%)  URS: "+r.gc.URS+" ("+r.gp.U+"%)  REJECT: "+r.gc.REJECT+" ("+r.gp.R+"%)  CHECK: "+(r.gc.CHECK||0)+" ("+(r.gp.CHECK||0)+"%)");
+  (r.layers||[]).forEach(function(L){
+    L.push(" LAYER "+L.layer+" : "+L.count+" onions - "+L.name+" - ~"+L.est_weight_kg+" kg - avg "+L.avg_diameter_mm+" mm");
+  });
+  L.push(" WEIGHT   ~ "+r.weightKg+" kg (~"+r.bags+" x 50-kg bags) [estimate]");
+  L.push(" COVERAGE : "+r.coverage+"% of photo");
+  L.push("----------------------------------------------");
+  r.onions.forEach(function(o){
+    L.push("  #"+o.id+" "+o.label+" "+o.diameter_mm+"mm "+o.mass_g+"g "+
+      o.grade+" (green "+(100*o.features.green).toFixed(1)+"% brown "+
+      (100*o.features.brown).toFixed(1)+"% dark "+(100*o.features.dark).toFixed(1)+"%)");
+  });
+  if(r.flags&&r.flags.length){L.push("----------------------------------------------");
+    r.flags.forEach(function(f){L.push(" FLAG: "+f);});}
+  L.push("----------------------------------------------");
+  L.push(" SUMMARY: "+r.summary);
+  L.push(" NOTE: VISIBLE SURFACE ANALYSIS ONLY - cannot detect internal rot,");
+  L.push(" damage or moisture. No accuracy claimed without a labeled test set.");
+  L.push("==============================================");
+  return L.join("\n");
+}
+</script>
+<script src="three.min.js"></script>
+<script>
+/* compact 3D onion for the offline app (same metaphor, battery-polite) */
+(function(){
+  if(!window.THREE) return;
+  var stage=document.getElementById("stage3d"); if(!stage) return;
+  var r; try{r=new THREE.WebGLRenderer({antialias:true,alpha:true});}catch(e){return;}
+  r.setPixelRatio(Math.min(devicePixelRatio||1,2));
+  stage.appendChild(r.domElement);
+  var reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var scene=new THREE.Scene(), cam=new THREE.PerspectiveCamera(38,1,.1,100);
+  cam.position.set(0,.15,5.4);
+  var onion=new THREE.Group(); scene.add(onion);
+  function profile(R,H,n){var p=[];for(var i=0;i<=n;i++){var t=i/n;
+    p.push(new THREE.Vector2(R*Math.pow(Math.sin(Math.PI*t),.68),(t-.5)*H));}return p;}
+  [[1,.15],[.85,.12],[.7,.09],[.55,.07],[.4,.05]].forEach(function(s,i){
+    onion.add(new THREE.Mesh(new THREE.LatheGeometry(profile(1.18*s[0],2.5*s[0],40),48),
+      new THREE.MeshPhongMaterial({color:new THREE.Color(0xf5ead8).lerp(
+        new THREE.Color(0xd9e6ff),i/4),transparent:true,opacity:s[1],
+        side:THREE.DoubleSide,depthWrite:false,shininess:90,specular:0x99bbff})));});
+  onion.add(new THREE.Mesh(
+    new THREE.LatheGeometry(profile(1.18,2.5,40),48,Math.PI*.62,Math.PI*1.5),
+    new THREE.MeshPhongMaterial({color:0xd08a2f,transparent:true,opacity:.97,
+      side:THREE.DoubleSide,shininess:26,specular:0x6b5a33})));
+  var core=new THREE.Mesh(new THREE.SphereGeometry(.17,20,20),
+    new THREE.MeshBasicMaterial({color:0x2f7bff}));
+  onion.add(core);
+  var cv=document.createElement("canvas");cv.width=cv.height=128;
+  var g=cv.getContext("2d"),gr=g.createRadialGradient(64,64,0,64,64,64);
+  gr.addColorStop(0,"rgba(60,120,255,.85)");gr.addColorStop(.35,"rgba(0,82,255,.38)");
+  gr.addColorStop(1,"rgba(0,82,255,0)");g.fillStyle=gr;g.fillRect(0,0,128,128);
+  var glow=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),
+    transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+  glow.scale.set(2.5,2.5,1);onion.add(glow);
+  onion.add(new THREE.PointLight(0x0052ff,2.4,7,2));
+  scene.add(new THREE.AmbientLight(0xffffff,.38));
+  var key=new THREE.DirectionalLight(0xffdfae,1.05);key.position.set(3,4,2.5);scene.add(key);
+  var rim=new THREE.DirectionalLight(0x4d8bff,.95);rim.position.set(-4,-1.5,-2.5);scene.add(rim);
+  var tRX=-.06,tRY=.35,cRX=tRX,cRY=tRY,drag=false,px=0,py=0;
+  stage.addEventListener("pointerdown",function(e){drag=true;px=e.clientX;py=e.clientY;
+    stage.setPointerCapture(e.pointerId);});
+  stage.addEventListener("pointermove",function(e){if(!drag)return;
+    tRY+=(e.clientX-px)*.008;tRX=Math.max(-.7,Math.min(.7,tRX+(e.clientY-py)*.006));
+    px=e.clientX;py=e.clientY;});
+  addEventListener("pointerup",function(){drag=false;});
+  function size(){var w=stage.clientWidth,h=stage.clientHeight;if(!w||!h)return;
+    r.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}
+  size();if(window.ResizeObserver)new ResizeObserver(size).observe(stage);
+  else addEventListener("resize",size);
+  var vis=true;if(window.IntersectionObserver)
+    new IntersectionObserver(function(en){vis=en[0].isIntersecting;}).observe(stage);
+  var t0=performance.now();
+  (function loop(now){requestAnimationFrame(loop);
+    if(!vis||document.hidden)return;
+    var t=(now||performance.now())-t0;
+    if(!drag&&!reduce)tRY+=.0035;
+    cRX+=(tRX-cRX)*.08;cRY+=(tRY-cRY)*.08;
+    onion.rotation.set(cRX,cRY,0);
+    onion.position.y=reduce?0:Math.sin(t*.0011)*.07;
+    glow.material.opacity=.8+Math.sin(t*.0018)*.12;
+    r.render(scene,cam);})(t0);
+})();
+</script>
+</body>
+</html>

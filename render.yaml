@@ -1,0 +1,14 @@
+# Render.com Blueprint — deploy the whole app with 3 clicks:
+# render.com -> New -> Blueprint -> pick this repo -> Apply.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: onion-grader
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: waitress-serve --host=0.0.0.0 --port=$PORT wsgi:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11

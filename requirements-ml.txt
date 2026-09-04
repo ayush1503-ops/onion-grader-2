@@ -1,0 +1,14 @@
+# OPTIONAL - ML TRAINING & YOLO TOOLS (not needed to run the web app)
+# Install only when you reach the CNN/YOLO steps. On Google Colab these
+# are mostly pre-installed. On Windows use the CPU torch index:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+tensorflow-cpu>=2.16.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+matplotlib>=3.7.0
+onnx>=1.15.0
+onnxruntime>=1.17
+onnxscript
