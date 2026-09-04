@@ -64,19 +64,37 @@ solved automatically).
 ### Vercel (serverless)
 
 This repo ships `app.py` (Flask entrypoint) + `vercel.json` for Vercel.
-It now uses **uv with `pyproject.toml` + `uv.lock`** (Python 3.11) — the
+It uses **uv with `pyproject.toml` + `uv.lock`** (Python 3.12) — the
 modern, reliable path. Vercel auto-detects those files and runs
 `uv sync --active --no-dev --link-mode hardlink --locked --no-editable`.
 
-⚠️ **Why Python 3.11 not 3.13.4?** `uv` only has the *latest* patch of
-each minor in its managed store (e.g. 3.13.15, 3.12.14, 3.11.16). Pinning
-an exact old patch like `3.13.4` in `.python-version` makes uv fail with:
+⚠️ **Why Python 3.12?** Vercel only supports **3.12 (default), 3.13 and
+3.14** — not 3.11, and not arbitrary patch versions. Two separate
+pitfalls have bitten this project:
 
-> `error: No interpreter found for Python 3.13.4 in managed installations`
+1. **Exact old patch (`3.13.4`)** — uv's managed Python store keeps only
+   the *latest* patch per minor (e.g. 3.13.15, 3.12.14). An exact pin
+   like `3.13.4` doesn't exist, so uv fails:
+   > `error: No interpreter found for Python 3.13.4 in managed installations`
 
-Fix: use `3.11` (or `3.12`) without a patch — uv then picks the latest
-patch and finds the system interpreter. This repo now pins `3.11` in
-`.python-version`, `vercel.json` runtime, and `render.yaml`.
+2. **Unsupported minor (`3.11`)** — even a bare `3.11` fails on Vercel,
+   because Vercel only installs 3.12/3.13/3.14. uv can't find a 3.11
+   interpreter (and can't download one during the build), so the same
+   error comes back:
+   > `error: No interpreter found for Python 3.11 in managed installations`
+
+Fix: pin a **supported** version. This repo pins `3.12` in
+`.python-version`, which satisfies `requires-python = ">=3.11,<3.13"`.
+Render stays on 3.11.11 (`render.yaml`) — it installs with `pip`, not uv,
+and both 3.11 and 3.12 satisfy the project range.
+
+⚠️ **`vercel.json` `includeFiles` must cover the Python modules.**
+`app.py` does `import grader` / `import yolo_mode`, but `includeFiles`
+is an *allowlist* — anything not matched is left out of the function
+bundle (Vercel does no import tracing / tree-shaking for Python). The
+glob must include `**/*.py` (or at least `grader.py` + `yolo_mode.py`),
+otherwise the build succeeds but every request 500s with
+`ModuleNotFoundError: No module named 'grader'`.
 
 ⚠️ **Do NOT add `rewrites` to `vercel.json`** (e.g. the old
 `/(.*) → /app.py` catch-all). Vercel now routes internal rewrites in
