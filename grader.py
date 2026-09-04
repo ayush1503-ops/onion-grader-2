@@ -131,12 +131,30 @@ GRADE_A_MM    = (45.0, 65.0)   # Grade A window
 URS_MM        = (35.0, 70.0)   # URS = relaxed specification window
 UNDERSIZED_MM = 35.0           # below this diameter -> "UNDERSIZED"
 
-# --- classification thresholds (DEMO values - MUST be tuned on real data!) ---
-GREEN_SPROUTED = 0.02  # >= 2%  green pixels       -> SPROUTED
-DARK_ROTTEN    = 0.12  # >= 12% very dark pixels   -> ROTTEN
-BROWN_ROTTEN   = 0.40  # >= 40% dark-brown pixels  -> ROTTEN
-DARK_DAMAGED   = 0.04  # >= 4%  very dark pixels   -> DAMAGED
-BROWN_DAMAGED  = 0.15  # >= 15% dark-brown pixels  -> DAMAGED
+# --- classification thresholds --------------------------------------------
+# Tuned 2026-09 on 12 real labelled photos (3 FRESH, 2 DAMAGED, 4 ROTTEN,
+# 3 SPROUTED - image-search/) PLUS the 7 synthetic test images, by
+# measuring the actual green/brown/dark values of every onion:
+#   fresh red onion:  brown ~0.01, dark ~0.25  (dark skin, NO brown)
+#   fresh yellow onion: brown ~0.18, dark ~0.06 (papery skin, NOT dark)
+#   rotten:           brown >= 0.28 AND dark >= 0.19 (both together)
+#   sprout:           vivid green >= 0.15 in the TOP-CENTRE of the onion
+# A single-feature rule cannot work: fresh RED onions are dark, fresh
+# YELLOW onions are brown - only the COMBINATION (dark AND brown)
+# separates rot from healthy skin of either colour.
+GREEN_SPROUTED = 0.10  # >= 10% VIVID green in the onion's top-centre
+                       # window -> SPROUTED (a sprout grows out of the
+                       # top; green BACKGROUND around the onion sits at
+                       # the sides/bottom and is ignored)
+DARK_ROTTEN    = 0.15  # very dark AND brown together -> ROTTEN
+BROWN_ROTTEN   = 0.15  # (both must be >= 0.15)
+BROWN_ROTTEN_HI = 0.45 # or VERY brown alone (>= 45%) -> ROTTEN
+DARK_DAMAGED   = 0.28  # >= 28% very dark pixels     -> DAMAGED
+BROWN_DAMAGED  = 0.19  # >= 19% dark-brown pixels    -> DAMAGED
+                       # (fresh yellow-onion skin measures up to ~0.18
+                       # brown - 0.19 keeps it GOOD; a real bruise/patch
+                       # reads >= 0.22. Known limit: a LIGHT bruise can
+                       # stay under 0.19 and pass as GOOD.)
 
 DISCLAIMER = ("VISIBLE SURFACE ANALYSIS ONLY - a normal photo cannot detect "
               "internal rot, internal damage or internal moisture. "
@@ -815,22 +833,45 @@ def find_coin(blobs, hsv, median_area):
 def onion_features(gray, hsv, mask):
     """
     Returns fractions (0..1) of the onion's visible surface that are:
-      green  - a green shoot (sprout)
+      green  - VIVID green pixels anywhere in the onion region
+      green_top - VIVID green in the onion's TOP-CENTRE window (where a
+               sprout grows; green BACKGROUND at the sides is ignored)
       brown  - DARK brown skin (defects are darker than healthy skin)
       dark   - very dark gray (rot / deep damage)
     """
     m = mask > 0
-    total = int(m.sum())
-    if total == 0:
-        return {"green": 0.0, "brown": 0.0, "dark": 0.0}
-    H = hsv[:, :, 0][m].astype(np.int32)
-    S = hsv[:, :, 1][m].astype(np.int32)
-    V = hsv[:, :, 2][m].astype(np.int32)
+    if not m.any():
+        return {"green": 0.0, "green_top": 0.0,
+                "brown": 0.0, "dark": 0.0}
+    # vivid-green map for the WHOLE image (the top-centre window below
+    # needs pixel POSITIONS, so we cannot use the masked 1-D arrays)
+    Hf = hsv[:, :, 0].astype(np.int32)
+    Sf = hsv[:, :, 1].astype(np.int32)
+    Vf = hsv[:, :, 2].astype(np.int32)
+    # VIVID green only (S>=100, V>=90): a real shoot is saturated and
+    # bright; dull green shadows / sack weave / pale background are not
+    vivid = (Hf >= 35) & (Hf <= 85) & (Sf >= 100) & (Vf >= 90)
+
+    H, S, V = Hf[m], Sf[m], Vf[m]
     G = gray[m].astype(np.int32)
-    green = float(np.mean((H >= 35) & (H <= 85) & (S >= 60) & (V >= 40)))
+    green = float(vivid[m].mean())
     brown = float(np.mean((H >= 8) & (H <= 25) & (S >= 60) & (V <= 160)))
     dark = float(np.mean(G < 70))
-    return {"green": green, "brown": brown, "dark": dark}
+
+    # top-centre window of the onion's own bounding box: a sprout pokes
+    # out of the TOP MIDDLE; background green hugs sides and bottom
+    ys, xs = np.where(m)
+    y0, y1 = int(ys.min()), int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max())
+    w, h = max(1, x1 - x0), max(1, y1 - y0)
+    win = np.zeros_like(m)
+    win[y0:y0 + int(h * 0.35),
+        x0 + int(w * 0.25):x0 + int(w * 0.75)] = True
+    area_top = int((m & win).sum())
+    green_top = (float((vivid & m & win).sum()) / area_top
+                 if area_top else 0.0)
+    return {"green": green, "green_top": green_top,
+            "brown": brown, "dark": dark}
 
 
 # ------------------------------------------------------------------
@@ -839,11 +880,21 @@ def onion_features(gray, hsv, mask):
 def classify(feats, d_mm, full_visible=True):
     """Order matters: check worst problems first.
     Size rules (UNDERSIZED) only apply to FULLY VISIBLE onions - a
-    partly hidden onion always measures too small, that would be unfair."""
-    if feats["green"] >= GREEN_SPROUTED:
+    partly hidden onion always measures too small, that would be unfair.
+
+    Thresholds were measured on 12 real labelled photos + the synthetic
+    test set (see the constants block above for the numbers)."""
+    # SPROUTED: vivid green at the onion's TOP-CENTRE (a sprout grows
+    # out of the top; green background at the sides does not count)
+    if feats.get("green_top", 0.0) >= GREEN_SPROUTED:
         return "SPROUTED"
-    if feats["dark"] >= DARK_ROTTEN or feats["brown"] >= BROWN_ROTTEN:
+    # ROTTEN: dark AND brown TOGETHER (a fresh RED onion is dark but
+    # not brown; a fresh YELLOW onion is brown but not dark; rot is
+    # both), or an extremely brown surface on its own
+    if ((feats["dark"] >= DARK_ROTTEN and feats["brown"] >= BROWN_ROTTEN)
+            or feats["brown"] >= BROWN_ROTTEN_HI):
         return "ROTTEN"
+    # DAMAGED: clearly darker/browner than healthy skin, but not rot
     if feats["dark"] >= DARK_DAMAGED or feats["brown"] >= BROWN_DAMAGED:
         return "DAMAGED"
     if full_visible and d_mm < UNDERSIZED_MM:
