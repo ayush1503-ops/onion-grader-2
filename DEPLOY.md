@@ -5,6 +5,23 @@ Pick the level that matches your need. Times are realistic.
 
 ---
 
+## Where each part of this project can live (30-second map)
+
+Everything starts with putting this folder on GitHub — every host
+below then deploys *from* GitHub on each push.
+
+| Part | Host | How |
+|---|---|---|
+| Offline phone app (`offline/`, pure HTML/JS, on-device AI) | **GitHub Pages** — free, HTTPS, no server | bundled `deploy/github-pages.yml` workflow; repo Settings → Pages → Source: *GitHub Actions* (Level 4) |
+| Full server app (`app.py`: upload, live camera, reports) | **Render** (free) or **Vercel** | `render.yaml` / `vercel.json` already in repo (Level 2) |
+| Integration API (`api.py`: JSON/CSV/PDF) | same Render/Vercel service or its own | Level 2 |
+| Quick demo, no hosting at all | tunnel from your laptop | Level 1 |
+
+GitHub Pages can only serve STATIC files — the Python server app must
+use Level 2 (Render/Vercel). The two links together = complete product.
+
+---
+
 ## Level 0 — Demo on your own Wi-Fi (0 min, already working)
 
 ```bash
@@ -107,11 +124,24 @@ so static hosting is free and instant:
 **Netlify Drop (easiest):** go to app.netlify.com/drop and drag the
 `offline/` folder in → instant HTTPS URL → install from there.
 
-**GitHub Pages:**
-1. Create repo, copy the contents of `offline/` into it
-   (index.html, opencv.js, sw.js, manifest, icons — all at repo root).
-2. Settings → Pages → deploy from branch → done:
-   `https://yourname.github.io/repo/`
+**GitHub Pages (automated — this repo ships the workflow):**
+1. The repo ships `deploy/github-pages.yml`, a ready Actions workflow
+   that publishes the `offline/` folder as a static site. GitHub does
+   not let bots add workflow files, so move it into place once (or
+   upload it to `.github/workflows/` via the web UI):
+   ```bash
+   mkdir -p .github/workflows
+   git mv deploy/github-pages.yml .github/workflows/pages.yml
+   git commit -m "ci: enable GitHub Pages deploy" && git push
+   ```
+2. On GitHub: repo **Settings → Pages → Build and deployment →
+   Source: "GitHub Actions"** (one-time, 10 seconds).
+3. Push to `main` (or Actions → *Deploy offline PWA to GitHub Pages*
+   → Run workflow) → done: `https://<your-user>.github.io/<repo>/`
+4. Install the PWA from that URL exactly as in Level 3.
+
+No second repo needed any more — the workflow serves `offline/`
+straight from this repository, and re-deploys on every change to it.
 
 ⚠️ Camera on a phone requires **HTTPS** — both options above give it
 automatically. `file://` (double-clicking index.html) will NOT enable

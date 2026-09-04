@@ -17,10 +17,18 @@ WHAT IT CREATES (in the test_images/ folder):
   test_batch_1.jpg          mixed batch + Rs.10-style coin (27 mm)
   test_batch_2_touching.jpg touching pairs + coin
   test_batch_3_no_coin.jpg  no coin (tests the fallback scale warning)
+  test_batch_4_dark.jpg     dark tray (auto background-polarity flip)
+  test_batch_5_pile.jpg     pile with occlusion (watershed + layers)
+  test_batch_6_exif.jpg     NO coin + real EXIF focal length in the
+                            file (tests the camera-distance scale path:
+                            run with --distance-mm 400)
+  test_batch_7_uneven.jpg   UNEVEN lighting (bright left half, shadow
+                            right half) - tests the uneven-lighting
+                            rescue passes in grader.py
 
 Each onion is drawn at a KNOWN size in mm, so we know the correct
 answer ("ground truth") and can check if grader.py counts and
-measures correctly.
+measures correctly. `selftest.py` does exactly that automatically.
 
 RUN:  python make_test_images.py
 """
@@ -123,12 +131,22 @@ def draw_onion(img, cx, cy, r_px, kind):
                     0, 0, 360, hsv_bgr(60, 160, 150), -1)
 
 
-def finish(img, path):
+def finish(img, path, exif_f35=None):
     """Add a little photo-like noise, then save as JPEG.
-    Quality 95 keeps edges clean so measurement stays accurate."""
+    Quality 95 keeps edges clean so measurement stays accurate.
+    exif_f35: if set, embed this 35mm-equivalent focal length (mm) in
+    the file's EXIF so grader.py's camera-distance scale path can be
+    tested (tag 41989 = FocalLengthIn35mmFilm)."""
     noise = RNG.normal(0, 4, (H, W, 1))
     img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-    cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if exif_f35 is None:
+        cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    else:
+        from PIL import Image
+        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        exif = pil.getexif()
+        exif[41989] = int(exif_f35)          # FocalLengthIn35mmFilm
+        pil.save(path, "JPEG", quality=95, exif=exif.tobytes())
     print(f"created  {path}")
 
 
@@ -211,10 +229,44 @@ def main():
     print("  ground truth: 8 onions | 4 single GOOD + 2 front GOOD covering "
           "2 back onions (1 GOOD, 1 DAMAGED) | layers: 6 on top, 2 hidden")
 
+    # ---------------- batch 6: NO coin, EXIF focal length in file -----
+    # Tests the camera-distance scale path: the photo carries a real
+    # EXIF 35mm-equivalent focal length, and the scene is drawn at the
+    # EXACT pixels-per-mm that those optics produce at DIST_MM, so
+    #   python grader.py test_batch_6_exif.jpg --distance-mm 400
+    # must measure the onions back at their true mm (+/- a pixel).
+    F35, DIST_MM = 26, 400
+    ppm6 = F35 / 36.0 * W / DIST_MM        # px per mm the camera sees
+    img = new_canvas()
+    draw_onion(img, 250, 250, int(55 * ppm6 / 2), "good")
+    draw_onion(img, 600, 250, int(55 * ppm6 / 2), "good")
+    draw_onion(img, 420, 550, int(55 * ppm6 / 2), "good")
+    draw_onion(img, 900, 450, int(40 * ppm6 / 2), "good")   # 40mm -> URS
+    finish(img, "test_images/test_batch_6_exif.jpg", exif_f35=F35)
+    print(f"  ground truth: 4 onions (3 GOOD 55mm + 1 GOOD 40mm), NO coin, "
+          f"EXIF F35={F35}mm drawn at {ppm6:.3f}px/mm -> with "
+          f"--distance-mm {DIST_MM} the grader must measure ~55/~40 mm")
+
+    # ---------------- batch 7: UNEVEN lighting (half in shadow) -------
+    # Smooth left-bright -> right-dark gradient, like a table half in
+    # sunlight. ONE global Otsu cut cannot separate onions on BOTH
+    # halves, so this tests the uneven-lighting rescue passes
+    # (local-contrast takeover + secondary detector) in grader.py.
+    grad = np.linspace(240, 105, W, dtype=np.float32)   # bright -> dark
+    img = np.repeat(np.repeat(grad[None, :], H, 0)[:, :, None], 3, 2)
+    img = img.astype(np.uint8)
+    draw_onion(img, 220, 250, mm2px(55), "good")         # bright half
+    draw_onion(img, 480, 560, mm2px(55), "good")         # bright half
+    draw_onion(img, 780, 260, mm2px(55), "good")         # shadow half
+    draw_onion(img, 1010, 560, mm2px(55), "good")        # deep shadow
+    finish(img, "test_images/test_batch_7_uneven.jpg")
+    print("  ground truth: 4 GOOD 55mm onions, NO coin, strong left-right "
+          "light gradient -> grader must still find all 4")
+
     print("\nDone! Now run:")
     print("  python grader.py test_images/test_batch_1.jpg --coin-mm 27")
-    print("  python grader.py test_images/test_batch_2_touching.jpg --coin-mm 27")
-    print("  python grader.py test_images/test_batch_3_no_coin.jpg --coin-mm 27")
+    print("  python grader.py test_images/test_batch_6_exif.jpg --distance-mm 400")
+    print("  python selftest.py          (checks every batch automatically)")
 
 
 if __name__ == "__main__":
