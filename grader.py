@@ -1514,6 +1514,56 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 "(low contrast / uneven light) - check their boxes on the "
                 "annotated photo")
 
+        # --- REFINEMENT PASS: split pieces that are STILL merged ---
+        # Why: when a pile merges into big blobs, the median BLOB area is
+        # a useless ruler (it is the pile, not an onion), so round 1 can
+        # leave pieces that are still 2+ onions glued together. The
+        # PIECES we have now are a much better ruler: a normal piece is
+        # roughly onion-sized, so any piece ~2x bigger than the MEDIAN
+        # piece is probably still merged -> re-split it with the piece
+        # median as the size hint (works for 1 merged blob, 2, or many).
+        for _round in range(2):          # at most 2 refinement rounds
+            if len(final) < 3:
+                break                    # too few pieces for a median
+            areas_f = [cv2.contourArea(c) for c in final]
+            ref_area = float(np.median(areas_f))
+            ref_r = math.sqrt(ref_area / math.pi)
+            # pieces still much bigger than a normal onion in THIS photo
+            big_ids = [i for i, a in enumerate(areas_f)
+                       if a > 2.2 * ref_area]
+            if not big_ids:
+                break                    # nothing left to refine
+            refined_any = False
+            for i in sorted(big_ids, reverse=True):   # back to front:
+                c = final[i]                           # indexes stay valid
+                area_c = areas_f[i]
+                exp = max(2, int(round(area_c / ref_area)))
+                pieces, pieces_vis = [], []
+                ws_pieces = watershed_split(bgr, c, expected=exp)
+                if (len(ws_pieces) == exp
+                        and not _pieces_overlap(ws_pieces)):
+                    pieces = ws_pieces
+                    pieces_vis = [None] * len(pieces)
+                if len(pieces) < 2:
+                    hpieces, hvis = hough_split(bgr, mask, c, ref_area,
+                                                r_hint=ref_r)
+                    if (len(hpieces) >= 2
+                            and not _pieces_overlap(hpieces)):
+                        pieces, pieces_vis = hpieces, hvis
+                if len(pieces) >= 2:
+                    # replace the merged piece with its parts (the two
+                    # lists must stay index-aligned!)
+                    final = final[:i] + pieces + final[i + 1:]
+                    final_vis = (final_vis[:i] + pieces_vis
+                                 + final_vis[i + 1:])
+                    watershed_splits += len(pieces) - 1
+                    refined_any = True
+                    # a split pile scene => the count is an estimate
+                    if coverage > 45.0:
+                        heap_estimated = True
+            if not refined_any:
+                break
+
         # any region still without a visibility value (Hough leftovers,
         # secondary-detector finds): use the convex-hull extent
         need = [i for i, v in enumerate(final_vis) if v is None]
