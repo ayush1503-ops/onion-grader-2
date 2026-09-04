@@ -62,10 +62,10 @@ from PIL import Image, ImageDraw, ImageFont
 MAX_WIDTH         = 1200   # images wider than this are resized down
 MIN_AREA_PX       = 1500   # ignore blobs smaller than this (specks/noise)
 # "ONLY ONIONS" rule (user policy: count the real onions, not bits):
-# a piece 10x smaller than the BIGGEST onion in the same photo is not a
+# a piece ~8x smaller than the BIGGEST onion in the same photo is not a
 # whole onion of that batch - it is a fragment, sack bit, shadow or
 # vignette. Onions in one photo differ by ~2x at most, never 10x.
-MIN_REL_SIZE      = 0.10
+MIN_REL_SIZE      = 0.12
 MIN_ONION_FRAC    = 0.20   # SECONDARY-pass candidates must also be at least
                            # this fraction of the median onion area. The old
                            # absolute 1500 px floor let TEXTURED backgrounds
@@ -1577,7 +1577,11 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                     if (len(pieces) == expected
                             and not _pieces_overlap(pieces)
                             and _split_pieces_consistent(pieces)
-                            and _split_covers_blob(pieces, c)):
+                            # watershed pieces TILE the blob, so a real
+                            # split covers ~99% of it; a fake carve of
+                            # one big onion covers ~60% -> demand 80%
+                            and _split_covers_blob(pieces, c,
+                                                   min_frac=0.80)):
                         watershed_splits += expected - 1
                         pieces_vis = [None] * len(pieces)   # keep lists aligned!
                     else:
@@ -1596,7 +1600,11 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                             and _split_pieces_consistent(hpieces)
                             and _split_covers_blob(
                                 hpieces, c,
-                                min_frac=0.35 if heap_mode else 0.5)):
+                                # 0.45: real 3-way splits cover 0.47-0.63
+                                # (a circle's other half can stick out
+                                # of an occluded blob); fake skin-texture
+                                # splits cover ~0.31 - still rejected
+                                min_frac=0.35 if heap_mode else 0.45)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
@@ -1611,12 +1619,13 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                         # the count is still only an estimate
                         heap_estimated = True
                 elif (coverage > 45.0 and area_c > 0.15 * img_area
-                      and dt_ratio >= 4.0):
+                      and dt_ratio >= 5.0):
                     # --- LAST-RESORT HEAP ESTIMATE ---
-                    # Only for blobs that are DEEP (DT ratio >= 4:
-                    # clearly many onions packed together). A ratio of
-                    # ~2-3 is often one big occluded onion - splitting
-                    # it created phantom onions on close-up photos.
+                    # Only for blobs that are DEEP (DT ratio >= 5:
+                    # clearly many onions packed together - real piles
+                    # measure ~7+). A single big occluded onion wobbles
+                    # around 3-4 with JPEG noise - splitting it created
+                    # phantom onions on close-up photos.
                     # Guess the onion radius from the blob's own shape
                     # (about 6 onions across its shorter side) and try
                     # Hough once more, depth-capped.
@@ -1694,11 +1703,11 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 area_c = areas_f[i]
                 exp = max(2, int(round(area_c / ref_area)))
                 # refinement is for DEEP merged pile pieces only
-                # (DT ratio >= 4). A ratio of ~2-3 is often just one
-                # big occluded onion - re-splitting it is what created
-                # phantom pieces on close-up photos.
+                # (DT ratio >= 5; real piles measure ~7+). A single big
+                # occluded onion wobbles around 3-4 with JPEG noise -
+                # re-splitting it created phantom pieces on close-ups.
                 _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
-                if dt_ratio < 4.0:
+                if dt_ratio < 5.0:
                     continue               # not clearly a merged pile piece
                 exp = min(exp, max(2, int(round(dt_ratio))))
                 pieces, pieces_vis = [], []
@@ -1706,7 +1715,8 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 if (len(ws_pieces) == exp
                         and not _pieces_overlap(ws_pieces)
                         and _split_pieces_consistent(ws_pieces)
-                        and _split_covers_blob(ws_pieces, c)):
+                        and _split_covers_blob(ws_pieces, c,
+                                               min_frac=0.80)):
                     pieces = ws_pieces
                     pieces_vis = [None] * len(pieces)
                 if len(pieces) < 2:
@@ -1976,12 +1986,39 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     return rep
 
 
+LIVE_MAX_WIDTH    = 480    # camera frames are normalized to this width
+# WHY: the classic-CV pipeline is scale-sensitive (Hough circle votes,
+# blur kernels and speck floors are in pixels). The SAME scene can
+# count 4 at 480px wide but 6-14 at 960-1280px. Fixing every internal
+# constant is a big rewrite; instead every LIVE camera frame is
+# resized to ONE working width, so photo mode and camera mode behave
+# the same for the same scene. Photo uploads keep their own path.
+
+
+def fit_live_frame(bgr):
+    """Normalize a camera frame to the LIVE working width.
+
+    Frames WIDER than LIVE_MAX_WIDTH are scaled down (aspect kept).
+    Smaller frames are returned unchanged. Idempotent: an already-
+    normalized frame passes through untouched.
+    """
+    h, w = bgr.shape[:2]
+    if w > LIVE_MAX_WIDTH:
+        bgr = cv2.resize(bgr, (LIVE_MAX_WIDTH,
+                               int(h * LIVE_MAX_WIDTH / w)),
+                         interpolation=cv2.INTER_AREA)
+    return bgr
+
+
 def analyze_frame(bgr, coin_mm=27.0, batch_id="LIVE", distance_mm=None,
                   assume_mm=None, coin_assumed=True):
     """In-memory analysis of ONE live video frame (no files written).
     Used by the web app's live mode and camera.py --auto.
     Note: live frames carry no EXIF, so the distance mode falls back to
-    the assumed-size mode automatically (honest, and said so)."""
+    the assumed-size mode automatically (honest, and said so).
+    The frame is first normalized to LIVE_MAX_WIDTH so the camera
+    behaves the same at every camera resolution."""
+    bgr = fit_live_frame(bgr)
     return analyze(bgr, coin_mm=coin_mm, batch_id=batch_id, out_dir=None,
                    distance_mm=distance_mm, assume_mm=assume_mm,
                    coin_assumed=coin_assumed)

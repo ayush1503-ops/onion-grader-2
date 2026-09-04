@@ -243,6 +243,10 @@ def api_live():
     bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if bgr is None:
         return jsonify({"ok": False, "error": "Frame was not a valid image."}), 400
+    # normalize to the LIVE working width FIRST, so the overlay boxes
+    # (drawn in the analyzed frame's coordinates) line up exactly with
+    # the canvas size we report below
+    bgr = grader.fit_live_frame(bgr)
 
     coin_mm, dist_mm, assu_mm, err = resolve_coin(
         request.form.get("coin_preset", "auto"),

@@ -764,7 +764,10 @@ function flipCamera(){
 function grabFrame(){
   var v=$("video");
   if(!v.videoWidth){return Promise.resolve(null);}
-  var maxSide=960,scale=Math.min(1,maxSide/v.videoWidth);
+  /* capture at the same width the server analyzes live frames at
+     (grader.LIVE_MAX_WIDTH): the live tally and the full report then
+     see the SAME image -> same onion count */
+  var maxSide=480,scale=Math.min(1,maxSide/v.videoWidth);
   var w=Math.round(v.videoWidth*scale),h=Math.round(v.videoHeight*scale);
   var c=document.createElement("canvas");c.width=w;c.height=h;
   c.getContext("2d").drawImage(v,0,0,w,h);
