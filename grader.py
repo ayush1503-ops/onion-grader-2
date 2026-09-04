@@ -378,7 +378,7 @@ def watershed_split(bgr, contour, expected=2):
     return [contour]
 
 
-def hough_split(bgr, mask, contour, median_area):
+def hough_split(bgr, mask, contour, median_area, r_hint=None):
     """
     Rescue split for OCCLUDED piles (one onion lying ON another).
 
@@ -395,6 +395,11 @@ def hough_split(bgr, mask, contour, median_area):
       3. cv2.watershed refines the cut along the REAL edges (the rim
          between the two onions), so each onion keeps its true surface.
 
+    r_hint: optional onion radius in px. Pass it when median_area is
+    meaningless for sizing - the HEAP case (one merged blob): the
+    median of ONE blob is the blob itself, so the derived radius would
+    be huge and every circle would be rejected.
+
     Returns (regions, vis_hints): contours plus a visibility guess
     per region (None = measure with the convex-hull extent later).
     """
@@ -406,7 +411,7 @@ def hough_split(bgr, mask, contour, median_area):
     roi = cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     roi = cv2.GaussianBlur(roi, (7, 7), 0)
 
-    r_med = math.sqrt(median_area / math.pi)
+    r_med = float(r_hint) if r_hint else math.sqrt(median_area / math.pi)
     circles = cv2.HoughCircles(roi, cv2.HOUGH_GRADIENT, dp=1.2,
                                minDist=0.6 * r_med, param1=110, param2=25,
                                minRadius=int(0.55 * r_med),
@@ -453,7 +458,11 @@ def hough_split(bgr, mask, contour, median_area):
     markers[seed_img > 0] = seed_img[seed_img > 0]
     cv2.watershed(bgr[y0:y1, x0:x1], markers)
 
-    min_area = max(MIN_AREA_PX, 0.15 * median_area)
+    # minimum piece size: relative to the REFERENCE onion size. In heap
+    # mode (r_hint given) median_area is the whole merged blob, so we
+    # size the threshold from the hinted onion circle instead.
+    ref_area = (math.pi * r_med * r_med) if r_hint else median_area
+    min_area = max(MIN_AREA_PX, 0.15 * ref_area)
     regions, vis_hints = [], []
     # the flooded onion regions. For a circle-piece the best occlusion
     # measure is: visible area / true circle area (the Hough circle IS
@@ -1360,7 +1369,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     gray, mask = make_object_mask(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    if not in_memory:
+    if out_dir and not in_memory:
         cv2.imwrite(os.path.join(out_dir, f"debug_mask_{stem}.jpg"), mask)
 
     blobs = get_blobs(mask)
@@ -1410,21 +1419,54 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 mask, blobs = mask_lc, refined
     warnings, watershed_splits = [], 0
 
+    # --- scene suitability (honest diagnostics, not fake accuracy) ---
+    # Real-world photos (heaps on jute sacks, textured surfaces, busy
+    # backgrounds) break single-threshold segmentation. Instead of
+    # silently returning nonsense numbers, TELL the user the SCENE is
+    # the problem and what to change.
+    coverage = 100.0 * float(mask.mean()) / 255.0
+    if blobs and coverage > 55.0:
+        warnings.append(
+            f"objects cover {coverage:.0f}% of the photo and merge into "
+            "big blobs - this looks like a HEAP or a busy/textured "
+            "background. For reliable counting, spread the onions in "
+            "ONE layer on a plain, contrasting surface.")
+
+    # heap-detection flags (set inside the blobs block below; defined
+    # here so the code AFTER the block can always read them)
+    heap_mode = heap_estimated = False
+
     if blobs:
         areas = [cv2.contourArea(c) for c in blobs]
         median_area = float(np.median(areas))
+
+        # --- HEAP CASE: one merged blob covers a big part of the photo
+        # (a pile/heap of many onions). The median-area trick degenerates
+        # here - the median of ONE blob is the blob itself, so
+        # expected=1 and no split is ever attempted ("1 onion" for a
+        # heap of 20). We estimate the onion radius from the blob's own
+        # geometry instead and let watershed/Hough find the individuals.
+        heap_mode = (len(blobs) == 1
+                     and areas[0] > 0.25 * img_area)
 
         # --- split touching onions ---
         final, final_vis = [], []   # final_vis: None = compute extent later
         for c in blobs:
             area_c = cv2.contourArea(c)
-            big = area_c > MERGED_FACTOR * median_area
+            big = area_c > MERGED_FACTOR * median_area or heap_mode
             not_round = circularity(c) < CIRC_SPLIT_MAX
             expected = max(1, int(math.ceil(area_c / median_area)))
+            r_hint = None
+            if heap_mode:
+                bx, by, bw, bh = cv2.boundingRect(c)
+                # ~6 onions fit across the blob's shorter side -> radius
+                r_hint = max(15.0, min(bw, bh) / 6.0)
+                expected = max(2, int(math.ceil(
+                    area_c / (math.pi * r_hint * r_hint))))
             # "underfull": the blob is too small for `expected` full
             # onions -> part of them must be HIDDEN (a pile!)
             underfull = area_c < 0.85 * expected * median_area
-            if big and (not_round or underfull):
+            if big and (not_round or underfull or heap_mode):
                 pieces, pieces_vis = [], []
                 if expected >= 2:
                     pieces = watershed_split(bgr, c, expected=expected)
@@ -1439,15 +1481,23 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                         pieces, pieces_vis = [], []
                 if len(pieces) < 2:
                     # rescue: Hough circle search for hidden onions
-                    hpieces, hvis = hough_split(bgr, mask, c, median_area)
+                    # (r_hint only in heap mode - see hough_split docs)
+                    hpieces, hvis = hough_split(bgr, mask, c, median_area,
+                                                r_hint=r_hint)
                     if (len(hpieces) >= 2
                             and not _pieces_overlap(hpieces)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
+                        if heap_mode:
+                            heap_estimated = True
                 if len(pieces) >= 2:
                     final += pieces
                     final_vis += pieces_vis
+                    if heap_mode:
+                        # heap split by EITHER watershed or Hough ->
+                        # the count is still only an estimate
+                        heap_estimated = True
                 else:
                     final.append(c)
                     final_vis.append(None)
@@ -1565,6 +1615,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     # --- counts and percentages ---
     n = len(onions)
+    if heap_estimated and n > 1:
+        warnings.append(
+            f"this looks like a HEAP/pile of onions - the {n} count is an "
+            "ESTIMATE (onions hide behind each other). For an exact count, "
+            "spread them in ONE layer, or fine-tune YOLO on real photos "
+            "(prelabel_real.py -> train_yolo.py).")
     grades = [o["grade"] for o in onions]
     gc = {"A": grades.count("A"), "URS": grades.count("URS"),
           "REJECT": grades.count("REJECT"), "CHECK": grades.count("CHECK")}
@@ -1585,6 +1641,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     # --- quantity estimate + quality flags + human summary ---
     qflags = quality_checks(gray, hsv)
+    if watershed_splits >= 8:
+        warnings.append(
+            f"heavy splitting ({watershed_splits} cuts) - skin texture, "
+            "mold spots or background detail are being separated as "
+            "extra 'onions'. If this photo really has only a few onions, "
+            "the count is UNRELIABLE - try a plainer background.")
     if n:
         Hf, Wf = bgr.shape[:2]
         edge_ids = [o["id"] for o in onions
@@ -1639,7 +1701,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     }
 
     # --- write the 4 report files (skipped in live/in-memory mode) ---
-    if not in_memory:
+    if out_dir and not in_memory:
         f_ann = os.path.join(out_dir, f"{stem}_annotated.jpg")
         f_jsn = os.path.join(out_dir, f"{stem}_report.json")
         f_txt = os.path.join(out_dir, f"{stem}_report.txt")
