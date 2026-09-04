@@ -3,7 +3,12 @@ outputs/
 runs/
 models/
 dataset/
+onion_cnn.pt
+*.pt
+*.h5
+*.onnx
 snapshot_*.jpg
+dummy_preview.jpg
 labels_log_*.csv
 __pycache__/
 *.pyc
