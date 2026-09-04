@@ -73,6 +73,11 @@ BLUR_K            = (7, 7) # Gaussian blur kernel size
 MORPH_K           = (7, 7) # morphology kernel size
 MERGED_FACTOR     = 1.3    # blob area > 1.3 x median  -> maybe 2 touching onions
 CIRC_SPLIT_MAX    = 0.75   # ...and circularity < 0.75 (not round) -> try split
+# a REAL split of N touching onions gives N pieces of SIMILAR size;
+# texture noise gives chunks + slivers. If the biggest piece is more
+# than 3.5x the smallest, the "split" is skin texture, not onions.
+# (measured: real splits 1.0-3.1x, texture splits 3.7-6.5x and worse)
+SPLIT_SPREAD_MAX  = 3.5
 COIN_CIRC_MIN     = 0.80   # a coin must be very round
 COIN_AREA_MAX     = 0.60   # ...and much smaller than a typical onion
 COIN_SAT_MAX      = 90     # ...and metallic: mean saturation this low
@@ -378,7 +383,44 @@ def watershed_split(bgr, contour, expected=2):
     return [contour]
 
 
-def hough_split(bgr, mask, contour, median_area, r_hint=None):
+def _dt_disc_ratio(shape, contour):
+    """Distance-transform 'how many onions deep is this blob' estimate.
+
+    Fills the blob, measures the deepest point (distance transform
+    max = radius of the biggest disc that fits inside), and returns
+    (d_max, blob_area / disc_area). ONE round onion gives ~1.0 (it IS
+    one disc). N touching onions give roughly N (their union holds N
+    discs of one-onion radius). The photo BORDER counts as background
+    (we pad with zeros) - otherwise a blob touching the edge looks
+    infinitely deep.
+    """
+    m = np.zeros(shape[:2], np.uint8)
+    cv2.drawContours(m, [contour], -1, 255, -1)
+    m = cv2.copyMakeBorder(m, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=0)
+    dist = cv2.distanceTransform(m, cv2.DIST_L2, 5)
+    d_max = float(dist.max())
+    disc = math.pi * d_max * d_max
+    ratio = cv2.contourArea(contour) / disc if disc > 0 else 99.0
+    return d_max, ratio
+
+
+def _split_pieces_consistent(pieces):
+    """Are these split pieces PLAUSIBLY one onion each?
+
+    A real split of N touching onions gives N pieces of SIMILAR size
+    (each piece ~ one onion). Texture noise (skin spots, mold, sack
+    weave) gives a few big chunks + many slivers - sizes all over the
+    place. Rule: the biggest piece may be at most SPLIT_SPREAD_MAX
+    times the smallest, else the split is garbage -> reject it.
+    """
+    if len(pieces) < 2:
+        return False
+    areas = [cv2.contourArea(p) for p in pieces]
+    return max(areas) <= SPLIT_SPREAD_MAX * max(1.0, min(areas))
+
+
+def hough_split(bgr, mask, contour, median_area, r_hint=None,
+                max_circles=None):
     """
     Rescue split for OCCLUDED piles (one onion lying ON another).
 
@@ -399,6 +441,11 @@ def hough_split(bgr, mask, contour, median_area, r_hint=None):
     meaningless for sizing - the HEAP case (one merged blob): the
     median of ONE blob is the blob itself, so the derived radius would
     be huge and every circle would be rejected.
+
+    max_circles: hard cap on how many onions this blob may contain
+    (from the distance-transform depth estimate). Hough happily finds
+    9 weak "circles" of skin texture on ONE big close-up onion - the
+    cap keeps only the strongest few.
 
     Returns (regions, vis_hints): contours plus a visibility guess
     per region (None = measure with the convex-hull extent later).
@@ -433,6 +480,10 @@ def hough_split(bgr, mask, contour, median_area, r_hint=None):
             accepted.append((cx, cy, r))
     if not accepted:
         return [], []
+    if max_circles and len(accepted) > max_circles:
+        # keep only the STRONGEST circles (HoughCircles returns them
+        # roughly in vote order - strongest first)
+        accepted = accepted[:int(max_circles)]
 
     h_roi, w_roi = blob.shape
     # SMALL circular cores as watershed seeds. Do NOT seed the whole
@@ -1466,12 +1517,23 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             # "underfull": the blob is too small for `expected` full
             # onions -> part of them must be HIDDEN (a pile!)
             underfull = area_c < 0.85 * expected * median_area
+            # DEPTH CAP: how many onions deep is this blob? One round
+            # onion ~ 1.0, N touching onions ~ N. When the depth says
+            # "about 3 onions", a splitter returning 9 "onions" is
+            # reading skin texture, not onions -> cap the piece count.
+            # (Only when the estimate is trustworthy: ratio >= 1.6.
+            # Below that, touching onions look shallow - do not cap.)
+            if not heap_mode:
+                _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
+                if dt_ratio >= 1.6:
+                    expected = min(expected, max(2, int(round(dt_ratio))))
             if big and (not_round or underfull or heap_mode):
                 pieces, pieces_vis = [], []
                 if expected >= 2:
                     pieces = watershed_split(bgr, c, expected=expected)
                     if (len(pieces) == expected
-                            and not _pieces_overlap(pieces)):
+                            and not _pieces_overlap(pieces)
+                            and _split_pieces_consistent(pieces)):
                         watershed_splits += expected - 1
                         pieces_vis = [None] * len(pieces)   # keep lists aligned!
                     else:
@@ -1482,10 +1544,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 if len(pieces) < 2:
                     # rescue: Hough circle search for hidden onions
                     # (r_hint only in heap mode - see hough_split docs)
-                    hpieces, hvis = hough_split(bgr, mask, c, median_area,
-                                                r_hint=r_hint)
+                    hpieces, hvis = hough_split(
+                        bgr, mask, c, median_area, r_hint=r_hint,
+                        max_circles=(expected if not heap_mode else None))
                     if (len(hpieces) >= 2
-                            and not _pieces_overlap(hpieces)):
+                            and not _pieces_overlap(hpieces)
+                            and _split_pieces_consistent(hpieces)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
@@ -1498,6 +1562,30 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                         # heap split by EITHER watershed or Hough ->
                         # the count is still only an estimate
                         heap_estimated = True
+                elif (coverage > 45.0 and area_c > 0.15 * img_area):
+                    # --- LAST-RESORT HEAP ESTIMATE ---
+                    # A real pile photo where the gated splitters gave
+                    # up. Guess the onion radius from the blob's own
+                    # shape (about 6 onions across its shorter side)
+                    # and try Hough once more. The spread gate still
+                    # applies: on a CLOSE-UP of a few big onions this
+                    # guess makes ragged pieces and gets rejected (the
+                    # blob stays ONE onion); on a real heap of many
+                    # small onions it gives a usable ESTIMATE.
+                    bx, by, bw, bh = cv2.boundingRect(c)
+                    r_guess = max(15.0, min(bw, bh) / 6.0)
+                    hpieces, hvis = hough_split(
+                        bgr, mask, c, median_area, r_hint=r_guess)
+                    if (len(hpieces) >= 2
+                            and not _pieces_overlap(hpieces)
+                            and _split_pieces_consistent(hpieces)):
+                        final += hpieces
+                        final_vis += hvis
+                        watershed_splits += len(hpieces) - 1
+                        heap_estimated = True
+                    else:
+                        final.append(c)
+                        final_vis.append(None)
                 else:
                     final.append(c)
                     final_vis.append(None)
@@ -1538,17 +1626,25 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 c = final[i]                           # indexes stay valid
                 area_c = areas_f[i]
                 exp = max(2, int(round(area_c / ref_area)))
+                # same DEPTH CAP as round 1 (see above): never let a
+                # splitter find far more "onions" than the blob is deep
+                _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
+                if dt_ratio >= 1.6:
+                    exp = min(exp, max(2, int(round(dt_ratio))))
                 pieces, pieces_vis = [], []
                 ws_pieces = watershed_split(bgr, c, expected=exp)
                 if (len(ws_pieces) == exp
-                        and not _pieces_overlap(ws_pieces)):
+                        and not _pieces_overlap(ws_pieces)
+                        and _split_pieces_consistent(ws_pieces)):
                     pieces = ws_pieces
                     pieces_vis = [None] * len(pieces)
                 if len(pieces) < 2:
                     hpieces, hvis = hough_split(bgr, mask, c, ref_area,
-                                                r_hint=ref_r)
+                                                r_hint=ref_r,
+                                                max_circles=exp)
                     if (len(hpieces) >= 2
-                            and not _pieces_overlap(hpieces)):
+                            and not _pieces_overlap(hpieces)
+                            and _split_pieces_consistent(hpieces)):
                         pieces, pieces_vis = hpieces, hvis
                 if len(pieces) >= 2:
                     # replace the merged piece with its parts (the two
