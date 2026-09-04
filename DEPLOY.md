@@ -63,8 +63,16 @@ solved automatically).
 
 ### Vercel (serverless)
 
-This repo ships `api/index.py` + `vercel.json` for Vercel. It installs
-with **plain pip from `requirements.txt`**.
+This repo ships `app.py` (Flask entrypoint) + `vercel.json` for Vercel.
+It installs with **plain pip from `requirements.txt`**.
+
+⚠️ **Do NOT add `rewrites` to `vercel.json`** (e.g. the old
+`/(.*) → /app.py` catch-all). Vercel now routes internal rewrites in
+backend-framework (Flask/Python) projects using the rewritten
+destination path, so Flask would receive `/app.py` as the request path
+for every request and 404 everything. Vercel's Flask framework build
+already sends ALL requests to `app.py` with their original paths —
+no rewrites are needed.
 
 ⚠️ **Do NOT add `uv.lock` / `pyproject.toml` back.** Vercel's Python
 runtime auto-detects those files and force-runs its own
