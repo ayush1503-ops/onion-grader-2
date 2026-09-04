@@ -3,6 +3,7 @@ outputs/
 runs/
 models/
 dataset/
+dataset_yolo/
 onion_cnn.pt
 *.pt
 *.h5
