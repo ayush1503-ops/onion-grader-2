@@ -61,6 +61,11 @@ from PIL import Image, ImageDraw, ImageFont
 # ------------------------------------------------------------------
 MAX_WIDTH         = 1200   # images wider than this are resized down
 MIN_AREA_PX       = 1500   # ignore blobs smaller than this (specks/noise)
+# "ONLY ONIONS" rule (user policy: count the real onions, not bits):
+# a piece 10x smaller than the BIGGEST onion in the same photo is not a
+# whole onion of that batch - it is a fragment, sack bit, shadow or
+# vignette. Onions in one photo differ by ~2x at most, never 10x.
+MIN_REL_SIZE      = 0.10
 MIN_ONION_FRAC    = 0.20   # SECONDARY-pass candidates must also be at least
                            # this fraction of the median onion area. The old
                            # absolute 1500 px floor let TEXTURED backgrounds
@@ -419,6 +424,23 @@ def _split_pieces_consistent(pieces):
     return max(areas) <= SPLIT_SPREAD_MAX * max(1.0, min(areas))
 
 
+def _split_covers_blob(pieces, contour, min_frac=0.5):
+    """Do the split pieces actually cover most of the blob?
+
+    A REAL split tiles the blob: watershed pieces cover ~all of it,
+    Hough circle pieces cover most of it (they miss the gaps between
+    onions). A FAKE split - two small skin-texture circles found on
+    ONE big close-up onion - covers only a small fraction of the blob.
+    If the pieces cover less than half the blob, whatever was "found"
+    is not the blob's content -> reject, keep the blob whole.
+    """
+    blob_area = cv2.contourArea(contour)
+    if blob_area <= 0:
+        return False
+    covered = sum(cv2.contourArea(p) for p in pieces)
+    return covered >= min_frac * blob_area
+
+
 def hough_split(bgr, mask, contour, median_area, r_hint=None,
                 max_circles=None):
     """
@@ -531,16 +553,32 @@ def hough_split(bgr, mask, contour, median_area, r_hint=None,
 
     # the area the BACKGROUND flood claimed inside the blob = exposed
     # surface of an onion Hough never found a circle for (no hint ->
-    # the caller falls back to the convex-hull extent)
+    # the caller falls back to the convex-hull extent).
+    # When max_circles is set, the caller capped how many onions this
+    # blob may contain. Leftover pieces are still allowed - in a real
+    # pile they ARE onions the circles missed - but only until the cap
+    # is reached (3 capped circles + 3 leftovers would bypass the cap
+    # and turn one close-up onion into 6 "onions").
+    leftover_budget = None
+    if max_circles:
+        if len(regions) < 2:
+            return [], []
+        leftover_budget = int(max_circles) - len(regions)
     leftover = (markers == 1) & blob
     if int(leftover.sum()) >= 0.35 * median_area:
         piece = leftover.astype(np.uint8) * 255
         cnts, _ = cv2.findContours(piece, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
-        for c2 in cnts:
-            if cv2.contourArea(c2) >= min_area:
-                regions.append(c2 + np.array([x0, y0]))
-                vis_hints.append(None)
+        lpieces = [c2 for c2 in cnts if cv2.contourArea(c2) >= min_area]
+        # biggest leftovers first - they are the most onion-like
+        lpieces.sort(key=cv2.contourArea, reverse=True)
+        for c2 in lpieces:
+            if leftover_budget is not None and leftover_budget <= 0:
+                break               # cap reached - stop adding pieces
+            regions.append(c2 + np.array([x0, y0]))
+            vis_hints.append(None)
+            if leftover_budget is not None:
+                leftover_budget -= 1
 
     if len(regions) < 2:
         return [], []
@@ -1502,6 +1540,10 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
         # --- split touching onions ---
         final, final_vis = [], []   # final_vis: None = compute extent later
+        # final_trusted: True = piece came from a VALIDATED split (it
+ # passed all gates), False = raw unsplit blob / secondary find.
+ # The fragment filter only drops UNTRUSTED tiny pieces.
+        final_trusted = []
         for c in blobs:
             area_c = cv2.contourArea(c)
             big = area_c > MERGED_FACTOR * median_area or heap_mode
@@ -1523,6 +1565,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             # reading skin texture, not onions -> cap the piece count.
             # (Only when the estimate is trustworthy: ratio >= 1.6.
             # Below that, touching onions look shallow - do not cap.)
+            dt_ratio = 0.0            # default: unknown / not computed
             if not heap_mode:
                 _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
                 if dt_ratio >= 1.6:
@@ -1533,7 +1576,8 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                     pieces = watershed_split(bgr, c, expected=expected)
                     if (len(pieces) == expected
                             and not _pieces_overlap(pieces)
-                            and _split_pieces_consistent(pieces)):
+                            and _split_pieces_consistent(pieces)
+                            and _split_covers_blob(pieces, c)):
                         watershed_splits += expected - 1
                         pieces_vis = [None] * len(pieces)   # keep lists aligned!
                     else:
@@ -1549,7 +1593,10 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                         max_circles=(expected if not heap_mode else None))
                     if (len(hpieces) >= 2
                             and not _pieces_overlap(hpieces)
-                            and _split_pieces_consistent(hpieces)):
+                            and _split_pieces_consistent(hpieces)
+                            and _split_covers_blob(
+                                hpieces, c,
+                                min_frac=0.35 if heap_mode else 0.5)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
@@ -1558,45 +1605,65 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 if len(pieces) >= 2:
                     final += pieces
                     final_vis += pieces_vis
+                    final_trusted += [True] * len(pieces)
                     if heap_mode:
                         # heap split by EITHER watershed or Hough ->
                         # the count is still only an estimate
                         heap_estimated = True
-                elif (coverage > 45.0 and area_c > 0.15 * img_area):
+                elif (coverage > 45.0 and area_c > 0.15 * img_area
+                      and dt_ratio >= 4.0):
                     # --- LAST-RESORT HEAP ESTIMATE ---
-                    # A real pile photo where the gated splitters gave
-                    # up. Guess the onion radius from the blob's own
-                    # shape (about 6 onions across its shorter side)
-                    # and try Hough once more. The spread gate still
-                    # applies: on a CLOSE-UP of a few big onions this
-                    # guess makes ragged pieces and gets rejected (the
-                    # blob stays ONE onion); on a real heap of many
-                    # small onions it gives a usable ESTIMATE.
+                    # Only for blobs that are DEEP (DT ratio >= 4:
+                    # clearly many onions packed together). A ratio of
+                    # ~2-3 is often one big occluded onion - splitting
+                    # it created phantom onions on close-up photos.
+                    # Guess the onion radius from the blob's own shape
+                    # (about 6 onions across its shorter side) and try
+                    # Hough once more, depth-capped.
                     bx, by, bw, bh = cv2.boundingRect(c)
                     r_guess = max(15.0, min(bw, bh) / 6.0)
+                    cap = max(2, int(round(dt_ratio)))
                     hpieces, hvis = hough_split(
-                        bgr, mask, c, median_area, r_hint=r_guess)
-                    if (len(hpieces) >= 2
-                            and not _pieces_overlap(hpieces)
-                            and _split_pieces_consistent(hpieces)):
-                        final += hpieces
-                        final_vis += hvis
-                        watershed_splits += len(hpieces) - 1
-                        heap_estimated = True
+                        bgr, mask, c, median_area, r_hint=r_guess,
+                        max_circles=cap)
+                    if len(hpieces) >= 2 and not _pieces_overlap(hpieces):
+                        # heap estimate: TRIM ragged edges instead of
+                        # rejecting - drop fragments (< 0.35x the median
+                        # piece of this split), keep the consistent core
+                        pas = [cv2.contourArea(p) for p in hpieces]
+                        pmed = float(np.median(pas))
+                        core = [(p, v) for p, v, a in
+                                zip(hpieces, hvis, pas)
+                                if a >= 0.35 * pmed]
+                        if len(core) >= 2 and _split_covers_blob(
+                                [p for p, _ in core], c, min_frac=0.35):
+                            final += [p for p, _ in core]
+                            final_vis += [v for _, v in core]
+                            final_trusted += [True] * len(core)
+                            watershed_splits += len(core) - 1
+                            heap_estimated = True
+                        else:
+                            final.append(c)
+                            final_vis.append(None)
+                            final_trusted.append(False)
                     else:
                         final.append(c)
                         final_vis.append(None)
+                        final_trusted.append(False)
                 else:
                     final.append(c)
                     final_vis.append(None)
+                    final_trusted.append(False)
             else:
                 final.append(c)
                 final_vis.append(None)
+                final_trusted.append(False)
         # --- "detect ALL onions": secondary passes for missed ones ---
         extras = detect_all_onions(bgr, gray, final, median_area)
         if extras:
             final += extras
             final_vis += [None] * len(extras)
+            final_trusted += [False] * len(extras)
             warnings.append(
                 f"{len(extras)} onion(s) found by the SECONDARY detector "
                 "(low contrast / uneven light) - check their boxes on the "
@@ -1626,16 +1693,20 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 c = final[i]                           # indexes stay valid
                 area_c = areas_f[i]
                 exp = max(2, int(round(area_c / ref_area)))
-                # same DEPTH CAP as round 1 (see above): never let a
-                # splitter find far more "onions" than the blob is deep
+                # refinement is for DEEP merged pile pieces only
+                # (DT ratio >= 4). A ratio of ~2-3 is often just one
+                # big occluded onion - re-splitting it is what created
+                # phantom pieces on close-up photos.
                 _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
-                if dt_ratio >= 1.6:
-                    exp = min(exp, max(2, int(round(dt_ratio))))
+                if dt_ratio < 4.0:
+                    continue               # not clearly a merged pile piece
+                exp = min(exp, max(2, int(round(dt_ratio))))
                 pieces, pieces_vis = [], []
                 ws_pieces = watershed_split(bgr, c, expected=exp)
                 if (len(ws_pieces) == exp
                         and not _pieces_overlap(ws_pieces)
-                        and _split_pieces_consistent(ws_pieces)):
+                        and _split_pieces_consistent(ws_pieces)
+                        and _split_covers_blob(ws_pieces, c)):
                     pieces = ws_pieces
                     pieces_vis = [None] * len(pieces)
                 if len(pieces) < 2:
@@ -1644,7 +1715,8 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                                                 max_circles=exp)
                     if (len(hpieces) >= 2
                             and not _pieces_overlap(hpieces)
-                            and _split_pieces_consistent(hpieces)):
+                            and _split_pieces_consistent(hpieces)
+                            and _split_covers_blob(hpieces, c)):
                         pieces, pieces_vis = hpieces, hvis
                 if len(pieces) >= 2:
                     # replace the merged piece with its parts (the two
@@ -1652,6 +1724,9 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                     final = final[:i] + pieces + final[i + 1:]
                     final_vis = (final_vis[:i] + pieces_vis
                                  + final_vis[i + 1:])
+                    final_trusted = (final_trusted[:i]
+                                     + [True] * len(pieces)
+                                     + final_trusted[i + 1:])
                     watershed_splits += len(pieces) - 1
                     refined_any = True
                     # a split pile scene => the count is an estimate
@@ -1683,6 +1758,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 if _c is coin["contour"]:
                     del final[_idx]
                     del final_vis[_idx]
+                    del final_trusted[_idx]
                     break
         else:
             # ---- NO COIN: honest estimate modes (no exact mm possible) ----
@@ -1718,6 +1794,27 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 warnings.append(
                     "No coin/reference found - sizes are ESTIMATES, not "
                     "measurements. Put a coin in the photo for exact mm.")
+
+        # --- "ONLY ONIONS" filter: drop fragments, keep real onions ---
+        # User policy: focus on the BIG onion pieces and count only
+        # real onions. A piece 10x smaller than the biggest onion in
+        # THIS photo is junk (sack bit, shadow, vignette corner, sliver
+        # from a bad cut) - not a whole onion of the same batch.
+        # Runs AFTER the coin check so a small coin is not affected.
+        if final:
+            biggest = max(cv2.contourArea(c) for c in final)
+            keep = [(c, v) for c, v, t in
+                    zip(final, final_vis, final_trusted)
+                    if t or cv2.contourArea(c) >= MIN_REL_SIZE * biggest]
+            dropped = len(final) - len(keep)
+            if dropped:
+                final = [c for c, _ in keep]
+                final_vis = [v for _, v in keep]
+                final_trusted = [t for *_, t in keep]
+                warnings.append(
+                    f"{dropped} tiny fragment(s) ignored - they are far "
+                    "smaller than the onions in this photo (sack bits, "
+                    "shadows or slivers), not onions.")
 
         # --- features + classify + grade, onion by onion ---
         # pile-layer cue for every final region (before building dicts)
