@@ -61,6 +61,14 @@ from PIL import Image, ImageDraw, ImageFont
 # ------------------------------------------------------------------
 MAX_WIDTH         = 1200   # images wider than this are resized down
 MIN_AREA_PX       = 1500   # ignore blobs smaller than this (specks/noise)
+MIN_ONION_FRAC    = 0.20   # SECONDARY-pass candidates must also be at least
+                           # this fraction of the median onion area. The old
+                           # absolute 1500 px floor let TEXTURED backgrounds
+                           # (jute bag, straw, cloth) through - each woven
+                           # strand fragment is > 1500 px but far smaller
+                           # than an onion, and they were counted as extra
+                           # onions. A real missed onion is roughly onion-
+                           # sized, so 20% of the median is a safe floor.
 BLUR_K            = (7, 7) # Gaussian blur kernel size
 MORPH_K           = (7, 7) # morphology kernel size
 MERGED_FACTOR     = 1.3    # blob area > 1.3 x median  -> maybe 2 touching onions
@@ -536,7 +544,7 @@ def _pieces_overlap(pieces, max_frac=SPLIT_OVERLAP_MAX):
     return False
 
 
-def detect_all_onions(bgr, gray, existing):
+def detect_all_onions(bgr, gray, existing, median_area=None):
     """
     "Detect ALL onions" engine: extra passes that catch onions the main
     Otsu mask MISSED (low contrast, uneven light, pale skins).
@@ -548,15 +556,20 @@ def detect_all_onions(bgr, gray, existing):
     PASS 3 - a Hough circle sweep over the whole frame for round,
              onion-sized objects the thresholds never separated.
 
-    Every candidate is validated (roundish, not flat background) and
-    de-duplicated against existing detections with bbox IoU, so the
-    count can only GROW where something was genuinely missed.
+    Every candidate is validated (roundish, not flat background, and
+    roughly ONION-SIZED: at least MIN_ONION_FRAC of the median onion
+    area when one is known, so textured-background fragments cannot
+    sneak in) and de-duplicated against existing detections with bbox
+    IoU, so the count can only GROW where something was genuinely
+    missed.  `median_area` may be None (labeling tools that pass no
+    existing detections) - then only the absolute size floor applies.
     Returns a list of extra contours (may be empty).
     """
     h, w = gray.shape
     extras = []
     used_boxes = [cv2.boundingRect(c) for c in existing]
     k = np.ones(MORPH_K, np.uint8)
+    min_onion_px = (MIN_ONION_FRAC * median_area) if median_area else 0
 
     def overlaps(cx, cy, r):
         for (bx, by, bw, bh) in used_boxes:
@@ -576,8 +589,8 @@ def detect_all_onions(bgr, gray, existing):
 
     def accept(c, min_circ=0.35):
         a = cv2.contourArea(c)
-        if a < MIN_AREA_PX or a > 0.5 * w * h:
-            return                      # speck, or the whole background
+        if a < MIN_AREA_PX or a < min_onion_px or a > 0.5 * w * h:
+            return          # speck / background texture / the whole frame
         if circularity(c) < min_circ:
             return                      # onions are round-ish
         bb = cv2.boundingRect(c)
@@ -1442,7 +1455,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 final.append(c)
                 final_vis.append(None)
         # --- "detect ALL onions": secondary passes for missed ones ---
-        extras = detect_all_onions(bgr, gray, final)
+        extras = detect_all_onions(bgr, gray, final, median_area)
         if extras:
             final += extras
             final_vis += [None] * len(extras)
