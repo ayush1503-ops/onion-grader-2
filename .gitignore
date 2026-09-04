@@ -1,7 +1,7 @@
 uploads/
 outputs/
 runs/
-models/
+models/*
 dataset/
 dataset_yolo/
 onion_cnn.pt
@@ -14,3 +14,7 @@ labels_log_*.csv
 __pycache__/
 *.pyc
 .venv/
+
+# the trained onion classifier is a small pure-numpy JSON - it MUST
+# ship with the app (grader.py loads it at run time)
+!models/onion_clf.json

@@ -17,9 +17,8 @@ HONESTY RULES (never break):
       mean 75% accuracy on all onions in the world;
     * the labels come from the photo titles/descriptions, checked by
       eye where possible - they are good but not lab-grade;
-    * light bruises are known to be invisible to colour rules
-      (documented in grader.py) - that line shows as a MISS below
-      until a CNN/YOLO is trained on real photos.
+    * light bruises are hard: the trained random forest now catches
+      some (1/2 in this set); more real bruise photos will improve it.
 
 RUN:  python evaluate_real.py
 =====================================================================
@@ -86,7 +85,9 @@ def main():
         print(f"  {cls:<9} {hits}/{total}")
     print(f"  TOTAL     {correct}/{len(LABELS)}")
     print("\n(small web sample - NOT a scientific accuracy number;" )
-    print(" light bruises need a trained model: prelabel_real.py)")
+    print(" light bruises: model catches 1/2 - send more real bruise photos)")
+    print(" held-out (LOPO) accuracy of the model: "
+          + str(grader.clf_info().get("eval_lopo_real", "?")) + " real photos")
 
 
 if __name__ == "__main__":

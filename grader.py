@@ -28,7 +28,9 @@ THE PIPELINE (classic computer vision - no training needed):
       7. WATERSHED (cv2.watershed)  -> split onions that TOUCH
       8. coin detection             -> convert pixels -> millimetres
       9. HSV + darkness features    -> measured INSIDE each onion only
-     10. rule-based classification  -> GOOD/DAMAGED/ROTTEN/SPROUTED/UNDERSIZED
+     10. classification             -> trained random forest (models/onion_clf.json)
+                                        + measured green-sprout rule
+                                        -> GOOD/DAMAGED/ROTTEN/SPROUTED/UNDERSIZED
      11. grading                    -> Grade A / URS / REJECT + percentages
      12. reports                    -> the 4 files above
 
@@ -39,6 +41,13 @@ HONESTY RULES (never remove this):
     * All thresholds below are DEMO STARTING POINTS. They are NOT
       verified accuracy. Real accuracy must be measured on a labeled
       test set (photos checked by a human expert).
+    * The surface classifier is a random forest trained on 12 real
+      labelled photos (augmented), 3 healthy red-onion pile photos
+      (ASSUMED healthy - stock/market photos) and synthetic onions.
+      Its honest held-out score (leave-one-real-photo-out) is printed
+      by train_classifier.py and stored in the model file's meta.
+      12 photos is a SMALL sample - do not quote it as production
+      accuracy.
 
 HOW TO RUN:
     python grader.py <photo.jpg> --coin-mm 27
@@ -832,17 +841,38 @@ def find_coin(blobs, hsv, median_area):
 # ------------------------------------------------------------------
 def onion_features(gray, hsv, mask):
     """
+    FEATURE ENGINE v3 - variety-invariant surface inspection.
+
     Returns fractions (0..1) of the onion's visible surface that are:
       green  - VIVID green pixels anywhere in the onion region
       green_top - VIVID green in the onion's TOP-CENTRE window (where a
                sprout grows; green BACKGROUND at the sides is ignored)
-      brown  - DARK brown skin (defects are darker than healthy skin)
-      dark   - very dark gray (rot / deep damage)
+      brown  - DARK brown skin (absolute, for the report display)
+      dark   - very dark gray (absolute, for the report display)
+    plus NEW relative features (the "advanced" part):
+      dark_rel  - fraction of INTERIOR pixels much DARKER than their
+                  LOCAL smooth neighbourhood (bruise / rot patch). The
+                  smooth sphere shading is absorbed by the baseline, and
+                  a healthy but naturally DARK-RED onion is uniform, so
+                  dark_rel stays ~0 -> no more false "rotten" on red
+                  varieties. Absolute thresholds punished whole varieties.
+      brown_rel - same, but the dark patch is also brown-hued (soggy rot)
+      deep_rel  - fraction EXTREMELY darker locally (V < baseline - 70):
+                  real rot / mold, not just shading or a light bruise
+      patch_frac - the LARGEST connected dark patch as a fraction of the
+                  interior. A bruise is one contiguous patch; scattered
+                  papery speckles are not.
+      v_std   - brightness variation inside the onion (mottled skin?)
+      tex_var - micro-texture on a size-normalised crop: dry papery
+                  skin is busy, a soggy rot patch is smooth and flat
+    The relative features are measured on an ERODED "interior" mask -
+    away from the edges, so shadows between touching onions and
+    background bleed cannot fake defects any more.
     """
     m = mask > 0
     if not m.any():
-        return {"green": 0.0, "green_top": 0.0,
-                "brown": 0.0, "dark": 0.0}
+        return {k: 0.0 for k in FEATURE_ORDER_V3}
+
     # vivid-green map for the WHOLE image (the top-centre window below
     # needs pixel POSITIONS, so we cannot use the masked 1-D arrays)
     Hf = hsv[:, :, 0].astype(np.int32)
@@ -852,54 +882,209 @@ def onion_features(gray, hsv, mask):
     # bright; dull green shadows / sack weave / pale background are not
     vivid = (Hf >= 35) & (Hf <= 85) & (Sf >= 100) & (Vf >= 90)
 
-    H, S, V = Hf[m], Sf[m], Vf[m]
-    G = gray[m].astype(np.int32)
-    green = float(vivid[m].mean())
-    brown = float(np.mean((H >= 8) & (H <= 25) & (S >= 60) & (V <= 160)))
-    dark = float(np.mean(G < 70))
-
-    # top-centre window of the onion's own bounding box: a sprout pokes
-    # out of the TOP MIDDLE; background green hugs sides and bottom
+    # ---- interior mask: erode away the edge band ----
     ys, xs = np.where(m)
     y0, y1 = int(ys.min()), int(ys.max())
     x0, x1 = int(xs.min()), int(xs.max())
     w, h = max(1, x1 - x0), max(1, y1 - y0)
+    k = max(3, int(0.10 * min(w, h)))
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    inner = cv2.erode((m * 255).astype(np.uint8), kern) > 0
+    if inner.sum() < max(400, 0.25 * m.sum()):   # tiny onion: keep centre
+        inner = m
+
+    H, S, V = Hf[inner], Sf[inner], Vf[inner]
+    green = float(vivid[m].mean())
+    brown = float(np.mean((H >= 8) & (H <= 25) & (S >= 60) & (V <= 160)))
+    dark = float(np.mean(V < 70))
+    # colour personality of this onion (variety / condition cues):
+    sat_med = float(np.median(S))            # vivid skin vs dull/moldy
+    v_med = float(np.median(V))
+    # grayish-black = MOLD (desaturated darkness), not a healthy skin
+    desat_dark = float(np.mean((S < 60) & (V < 90)))
+    # saturated-dark = natural DARK-RED skin (healthy red onion!)
+    sat_dark = float(np.mean((S >= 90) & (V < 110)))
+
+    # ---- relative-to-LOCAL-baseline defect features (v3 core) ----
+    # A round onion shades smoothly (bright centre, darker rim). If we
+    # compared every pixel to one global median, that shading would
+    # look like a defect. Instead we blur the brightness channel into
+    # a SMOOTH field and compare each pixel to its own neighbourhood:
+    # smooth shading is absorbed by the blur; a bruise or rot patch is
+    # a LOCAL anomaly and stands out. This works the same on bright
+    # yellow and dark red onions - variety-invariant.
+    Vwhole = hsv[:, :, 2].astype(np.float32)
+    Vfill = np.where(m, Vwhole, np.median(Vwhole[m])).astype(np.float32)
+    ks = max(5, (int(0.22 * min(w, h)) // 2) * 2 + 1)   # odd kernel
+    vbase = cv2.GaussianBlur(Vfill, (ks, ks), 0)
+    dev_dark = (Vwhole < vbase - 35.0) & inner      # locally darker
+    dev_brown = dev_dark & (Hf >= 8) & (Hf <= 25) & (Sf >= 50)
+    deep = (Vwhole < vbase - 70.0) & inner          # rot-dark locally
+    dark_rel = float(dev_dark.sum() / max(1, inner.sum()))
+    brown_rel = float(dev_brown.sum() / max(1, inner.sum()))
+    deep_rel = float(deep.sum() / max(1, inner.sum()))
+
+    # largest connected dark patch (a bruise is ONE blob, speckle is not)
+    patch_frac = 0.0
+    if dev_dark.any():
+        dmap = (dev_dark * 255).astype(np.uint8)
+        dmap = cv2.morphologyEx(dmap, cv2.MORPH_CLOSE,
+                                np.ones((3, 3), np.uint8))
+        _n, _lab, cc_stats, _cen = cv2.connectedComponentsWithStats(dmap)
+        if len(cc_stats):
+            areas = cc_stats[1:, cv2.CC_STAT_AREA]      # ignore bg
+            if len(areas):
+                patch_frac = float(areas.max() / max(1, inner.sum()))
+
+    v_std = float(Vf[inner].astype(np.float32).std())
+    # micro-texture on a SIZE-NORMALISED crop (so a small close-up photo
+    # and a wide pile photo measure the same way): dry papery skin is
+    # busy, a soggy rot patch is smooth and flat
+    crop = gray[y0:y1 + 1, x0:x1 + 1]
+    if crop.size:
+        crop = cv2.resize(crop, (96, 96), interpolation=cv2.INTER_AREA)
+        tex_var = float(crop.var())
+    else:
+        tex_var = 0.0
+
+    # top-centre window of the onion's own bounding box: a sprout pokes
+    # out of the TOP MIDDLE; background green hugs sides and bottom
     win = np.zeros_like(m)
     win[y0:y0 + int(h * 0.35),
         x0 + int(w * 0.25):x0 + int(w * 0.75)] = True
     area_top = int((m & win).sum())
     green_top = (float((vivid & m & win).sum()) / area_top
                  if area_top else 0.0)
-    return {"green": green, "green_top": green_top,
-            "brown": brown, "dark": dark}
+
+    return {
+        "green": green, "green_top": green_top,
+        "brown": brown, "dark": dark,
+        "dark_rel": dark_rel, "brown_rel": brown_rel, "deep_rel": deep_rel,
+        "patch_frac": patch_frac, "v_std": v_std, "tex_var": tex_var,
+        "sat_med": sat_med, "v_med": v_med,
+        "desat_dark": desat_dark, "sat_dark": sat_dark,
+    }
+
+
+# feature order shared by the trainer and the exported model.
+# "vis" = how much of the onion is actually visible (1.0 = full disc);
+# it is filled in by analyze() before classify() is called.
+FEATURE_ORDER_V3 = ["green", "green_top", "brown", "dark",
+                    "dark_rel", "brown_rel", "deep_rel",
+                    "patch_frac", "v_std", "tex_var",
+                    "sat_med", "v_med", "desat_dark", "sat_dark", "vis"]
 
 
 # ------------------------------------------------------------------
-# STEP 10 - classify one onion (rule based)
+# STEP 10a - the TRAINED random forest (advanced ML layer)
+#   models/onion_clf.json holds 250 decision trees trained by
+#   train_classifier.py (real photos + healthy piles + synthetic
+#   onions). The file is plain numbers: this loader needs ONLY
+#   numpy, so the trained model also runs on the Vercel deployment
+#   (scikit-learn is only needed to re-train, not to predict).
+#   If the file is missing, classify() falls back to the rules below.
+# ------------------------------------------------------------------
+_CLF_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "models", "onion_clf.json")
+_CLF = None
+_CLF_TRIED = False
+
+
+def load_clf(force=False):
+    """load the trained model once (returns the model dict or None)."""
+    global _CLF, _CLF_TRIED
+    if _CLF_TRIED and not force:
+        return _CLF
+    _CLF_TRIED = True
+    _CLF = None
+    try:
+        with open(_CLF_MODEL_PATH) as fh:
+            m = json.load(fh)
+        if m.get("format") == 1 and m.get("features") == FEATURE_ORDER_V3:
+            _CLF = m
+    except Exception:
+        pass
+    return _CLF
+
+
+def _clf_walk(node, x):
+    """walk one exported decision tree (leaf = class counts)."""
+    while node[0] != -1:
+        node = node[2] if x[node[0]] <= node[1] else node[3]
+    return node[1]
+
+
+def clf_predict(feats):
+    """majority vote of the forest -> 'GOOD' / 'DAMAGED' / 'ROTTEN',
+    or None if the trained model is not available."""
+    m = _CLF if _CLF is not None or _CLF_TRIED else load_clf()
+    if not m:
+        return None
+    # missing "vis" would unfairly mean "fully hidden" - default 1.0
+    x = [float(feats.get(k, 1.0 if k == "vis" else 0.0))
+         for k in m["features"]]
+    votes = np.zeros(len(m["classes"]))
+    for tree in m["trees"]:
+        counts = np.asarray(_clf_walk(tree, x), dtype=float)
+        votes += counts / max(1.0, counts.sum())
+    return str(m["classes"][int(np.argmax(votes))])
+
+
+def clf_info():
+    """honest description of the active classifier (for the report)."""
+    m = _CLF if _CLF is not None or _CLF_TRIED else load_clf()
+    if not m:
+        return {"name": "rules-v3",
+                "note": "trained model file missing - using hand rules"}
+    ev = m.get("meta", {}).get("eval", {})
+    return {"name": m.get("meta", {}).get("model", "random-forest"),
+            "eval_lopo_real": ev.get("lopo_real_photos"),
+            "sprout_rule": ev.get("sprout_rule"),
+            "note": ev.get("note", "")}
+
+
+# ------------------------------------------------------------------
+# STEP 10 - classify one onion (trained ML + measured rules)
 # ------------------------------------------------------------------
 def classify(feats, d_mm, full_visible=True):
-    """Order matters: check worst problems first.
+    """HYBRID classifier (v3):
+
+    1. SPROUTED  - measured rule: a vivid green shoot at the onion's
+       top-centre (green_top >= 0.10). Interpretable and robust - a
+       sprout is a clear visual signal, no model needed.
+    2. GOOD / DAMAGED / ROTTEN - the TRAINED random forest
+       (models/onion_clf.json, trained by train_classifier.py on real
+       photos + healthy red piles + synthetic onions). It looks at 14
+       variety-invariant features at once - local dark patches,
+       saturation, texture - which is why dark RED onions are no longer
+       falsely graded rotten and light bruises are now catchable.
+    3. If the model file is missing -> conservative rules-v3 fallback
+       (catches clear rot, never punishes dark-red skin).
+
     Size rules (UNDERSIZED) only apply to FULLY VISIBLE onions - a
     partly hidden onion always measures too small, that would be unfair.
-
-    Thresholds were measured on 12 real labelled photos + the synthetic
-    test set (see the constants block above for the numbers)."""
-    # SPROUTED: vivid green at the onion's TOP-CENTRE (a sprout grows
-    # out of the top; green background at the sides does not count)
+    """
+    # 1) sprout rule (measured on real photos)
     if feats.get("green_top", 0.0) >= GREEN_SPROUTED:
         return "SPROUTED"
-    # ROTTEN: dark AND brown TOGETHER (a fresh RED onion is dark but
-    # not brown; a fresh YELLOW onion is brown but not dark; rot is
-    # both), or an extremely brown surface on its own
-    if ((feats["dark"] >= DARK_ROTTEN and feats["brown"] >= BROWN_ROTTEN)
-            or feats["brown"] >= BROWN_ROTTEN_HI):
-        return "ROTTEN"
-    # DAMAGED: clearly darker/browner than healthy skin, but not rot
-    if feats["dark"] >= DARK_DAMAGED or feats["brown"] >= BROWN_DAMAGED:
-        return "DAMAGED"
-    if full_visible and d_mm < UNDERSIZED_MM:
+    # 2) trained model
+    lab = clf_predict(feats)
+    # 3) fallback rules (model file missing)
+    if lab is None:
+        if (feats.get("desat_dark", 0.0) >= 0.05          # gray mold
+                or feats.get("deep_rel", 0.0) >= 0.08     # rot-dark patch
+                or (feats.get("brown", 0.0) >= 0.25 and
+                    feats.get("dark", 0.0) >= 0.15)       # dark+brown
+                or (feats.get("brown", 0.0) >= 0.55 and
+                    feats.get("tex_var", 0.0) < 1500)):   # matte mold skin
+            return "ROTTEN"
+        if (feats.get("dark_rel", 0.0) >= 0.12 and
+                feats.get("brown_rel", 0.0) >= 0.05):     # local bruise
+            return "DAMAGED"
+        lab = "GOOD"
+    if lab == "GOOD" and full_visible and d_mm < UNDERSIZED_MM:
         return "UNDERSIZED"
-    return "GOOD"
+    return lab
 
 
 # ------------------------------------------------------------------
@@ -1891,6 +2076,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             d_mm = (2.0 * float(r)) / px_per_mm
             vis = 1.0 if vis is None else float(vis)
             layer = layer_of(vis)
+            feats["vis"] = vis          # the ML model sees occlusion too
             full_visible = (layer == "L1")
             label = classify(feats, d_mm, full_visible=full_visible)
             onions.append({
@@ -2001,6 +2187,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             "thresholds": {"green_sprouted": GREEN_SPROUTED,
                            "dark_rotten": DARK_ROTTEN, "brown_rotten": BROWN_ROTTEN,
                            "dark_damaged": DARK_DAMAGED, "brown_damaged": BROWN_DAMAGED},
+            "classifier": clf_info(),
         },
     }
 
