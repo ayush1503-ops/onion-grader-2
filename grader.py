@@ -61,6 +61,14 @@ from PIL import Image, ImageDraw, ImageFont
 # ------------------------------------------------------------------
 MAX_WIDTH         = 1200   # images wider than this are resized down
 MIN_AREA_PX       = 1500   # ignore blobs smaller than this (specks/noise)
+MIN_ONION_FRAC    = 0.20   # SECONDARY-pass candidates must also be at least
+                           # this fraction of the median onion area. The old
+                           # absolute 1500 px floor let TEXTURED backgrounds
+                           # (jute bag, straw, cloth) through - each woven
+                           # strand fragment is > 1500 px but far smaller
+                           # than an onion, and they were counted as extra
+                           # onions. A real missed onion is roughly onion-
+                           # sized, so 20% of the median is a safe floor.
 BLUR_K            = (7, 7) # Gaussian blur kernel size
 MORPH_K           = (7, 7) # morphology kernel size
 MERGED_FACTOR     = 1.3    # blob area > 1.3 x median  -> maybe 2 touching onions
@@ -78,6 +86,12 @@ WS_SWEEP_EXTRA = (0.85, 0.80, 0.75, 0.70, 0.65)
 # low tail: seeds for MOSTLY-HIDDEN onions (thin visible crescents)
 WS_SWEEP_LOW   = (0.30, 0.25, 0.20)
 MIN_PIECE_FRAC    = 0.30   # a valid split: each piece >= 30% of the blob
+SPLIT_OVERLAP_MAX = 0.25   # ...and NO piece may sit mostly INSIDE another
+                           # piece's outline. When watershed mis-splits ONE
+                           # onion, one seed's flood wraps around the other
+                           # -> a nested "ring" piece around the other piece.
+                           # A ring + its core is one onion counted twice,
+                           # so such splits are rejected (see _pieces_overlap).
 FALLBACK_ONION_MM = 55.0   # used ONLY when no coin is found (a GUESS!)
 
 # Pile-layer estimate (which "layer" of the pile is each onion in?).
@@ -484,7 +498,53 @@ def _bbox_iou(a, b):
     return inter / union if union else 0.0
 
 
-def detect_all_onions(bgr, gray, existing):
+def _pieces_overlap(pieces, max_frac=SPLIT_OVERLAP_MAX):
+    """True when "split" pieces are NESTED instead of lying side by side.
+
+    Why: cv2.watershed can mis-split ONE elongated/oval onion into two
+    when one seed's flood wraps around the other - the losing flood
+    survives as a RING-shaped piece around the winner (or the winner as
+    an island inside the ring). That is the SAME onion emitted twice.
+
+    Real touching onions always sit SIDE BY SIDE, so almost none of one
+    piece's pixels fall inside the other piece's filled outline (only a
+    ragged watershed line interleaves). A piece that is mostly INSIDE
+    another's filled outline is therefore a nested ring/core pair.
+
+    Measure (every ordered pair i, j): the fraction of piece i's pixels
+    that lie inside piece j's FILLED outline. Note the fill matters:
+    a ring piece's outline is the whole blob outline, so the core in its
+    "hole" counts as inside it. Any fraction > max_frac -> overlap.
+    """
+    if len(pieces) < 2:
+        return False
+    # one small canvas around all the pieces (full-frame is overkill)
+    xs, ys, xe, ye = [], [], [], []
+    for c in pieces:
+        x, y, w, h = cv2.boundingRect(c)
+        xs.append(x)
+        ys.append(y)
+        xe.append(x + w)
+        ye.append(y + h)
+    x0, y0 = max(0, min(xs) - 2), max(0, min(ys) - 2)
+    x1, y1 = max(xe) + 2, max(ye) + 2
+    filled = []
+    for c in pieces:
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.drawContours(m, [c], -1, 255, -1, offset=(-x0, -y0))
+        filled.append(m)
+    for i in range(len(pieces)):
+        area_i = max(1.0, float(cv2.contourArea(pieces[i])))
+        for j in range(len(pieces)):
+            if i == j:
+                continue
+            inside = cv2.countNonZero(cv2.bitwise_and(filled[i], filled[j]))
+            if inside > max_frac * area_i:
+                return True
+    return False
+
+
+def detect_all_onions(bgr, gray, existing, median_area=None):
     """
     "Detect ALL onions" engine: extra passes that catch onions the main
     Otsu mask MISSED (low contrast, uneven light, pale skins).
@@ -496,15 +556,20 @@ def detect_all_onions(bgr, gray, existing):
     PASS 3 - a Hough circle sweep over the whole frame for round,
              onion-sized objects the thresholds never separated.
 
-    Every candidate is validated (roundish, not flat background) and
-    de-duplicated against existing detections with bbox IoU, so the
-    count can only GROW where something was genuinely missed.
+    Every candidate is validated (roundish, not flat background, and
+    roughly ONION-SIZED: at least MIN_ONION_FRAC of the median onion
+    area when one is known, so textured-background fragments cannot
+    sneak in) and de-duplicated against existing detections with bbox
+    IoU, so the count can only GROW where something was genuinely
+    missed.  `median_area` may be None (labeling tools that pass no
+    existing detections) - then only the absolute size floor applies.
     Returns a list of extra contours (may be empty).
     """
     h, w = gray.shape
     extras = []
     used_boxes = [cv2.boundingRect(c) for c in existing]
     k = np.ones(MORPH_K, np.uint8)
+    min_onion_px = (MIN_ONION_FRAC * median_area) if median_area else 0
 
     def overlaps(cx, cy, r):
         for (bx, by, bw, bh) in used_boxes:
@@ -524,8 +589,8 @@ def detect_all_onions(bgr, gray, existing):
 
     def accept(c, min_circ=0.35):
         a = cv2.contourArea(c)
-        if a < MIN_AREA_PX or a > 0.5 * w * h:
-            return                      # speck, or the whole background
+        if a < MIN_AREA_PX or a < min_onion_px or a > 0.5 * w * h:
+            return          # speck / background texture / the whole frame
         if circularity(c) < min_circ:
             return                      # onions are round-ish
         bb = cv2.boundingRect(c)
@@ -1363,13 +1428,20 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 pieces, pieces_vis = [], []
                 if expected >= 2:
                     pieces = watershed_split(bgr, c, expected=expected)
-                    if len(pieces) == expected:
+                    if (len(pieces) == expected
+                            and not _pieces_overlap(pieces)):
                         watershed_splits += expected - 1
                         pieces_vis = [None] * len(pieces)   # keep lists aligned!
+                    else:
+                        # no clean split: either watershed failed, or its
+                        # "pieces" overlap (one onion mis-split into a
+                        # nested ring+core pair) -> pretend it did not split
+                        pieces, pieces_vis = [], []
                 if len(pieces) < 2:
                     # rescue: Hough circle search for hidden onions
                     hpieces, hvis = hough_split(bgr, mask, c, median_area)
-                    if len(hpieces) >= 2:
+                    if (len(hpieces) >= 2
+                            and not _pieces_overlap(hpieces)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
@@ -1383,7 +1455,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 final.append(c)
                 final_vis.append(None)
         # --- "detect ALL onions": secondary passes for missed ones ---
-        extras = detect_all_onions(bgr, gray, final)
+        extras = detect_all_onions(bgr, gray, final, median_area)
         if extras:
             final += extras
             final_vis += [None] * len(extras)
