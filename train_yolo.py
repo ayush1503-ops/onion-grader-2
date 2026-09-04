@@ -1,115 +1,157 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-=====================================================================
- train_yolo.py - fine-tune YOLOv8 on YOUR onion photos
- Smart India Hackathon 2026 - Problem SIH26031
-=====================================================================
+train_yolo.py - Step 7b: FINE-TUNE YOLOv8n on your own labeled onion data.
 
-THE BIG PICTURE (simple words):
-    1. You take 150-300+ photos of onions (all defect types).
-    2. You DRAW BOXES around every onion and give each box a class
-       name (= "labeling"). Tools: Roboflow (web, easiest),
-       LabelImg (desktop), CVAT.
-    3. Labeling gives you: one .txt file per photo + dataset.yaml.
-    4. This script trains YOLOv8n on that data -> models/onion_yolo.pt
-    5. After that, yolo_mode.py and the web app's YOLO toggle work.
+WHY FINE-TUNE
+-------------
+The stock yolov8n.pt knows the 80 COCO classes (person, car, sports
+ball...) but has NO "onion" class, so out of the box it cannot find
+onions. Fine-tuning keeps its general detection skills and teaches it our
+4 classes: good / damaged / rotten / sprouted.
 
-LABELING CLASSES (use EXACTLY these names):
-    onion_good, onion_damaged, onion_rotten, onion_sprouted
+DATASET FORMAT (dataset.yaml, exact spec format)
+------------------------------------------------
+    train: dataset_yolo/train/images
+    val:   dataset_yolo/val/images
+    nc:    4
+    names: ['good', 'damaged', 'rotten', 'sprouted']
 
-dataset.yaml FORMAT (YOLO "detection" format):
-    path: /full/path/to/onion-quality-analyzer/dataset_yolo
-    train: images/train
-    val: images/val
-    names:
-      0: onion_good
-      1: onion_damaged
-      2: onion_rotten
-      3: onion_sprouted
+Every photo needs a twin label file in a "labels" folder (same filename,
+.txt, same subpath with "images" replaced by "labels"), one line per
+onion, values divided by the image size:
+    class_id x_center y_center width height
+Example (a good onion in the middle of a 640x640 photo):
+    0 0.500000 0.500000 0.250000 0.250000
 
-FOLDER LAYOUT the YAML expects:
-    dataset_yolo/
-      images/train/*.jpg   images/val/*.jpg
-      labels/train/*.txt   labels/val/*.txt
-    (each label txt: "class_id cx cy w h" - normalized 0..1.
-     Roboflow's "Export -> YOLO" gives you exactly this zip.)
+HOW TO GET LABELED DATA
+-----------------------
+  real photos : label with Roboflow / LabelImg / CVAT, export "YOLO format"
+  dummy test  : python make_dummy_detection_dataset.py
+                (draws scenes AND writes the labels - zero manual work)
 
-TRAIN (laptop CPU = very slow, Colab T4 GPU = ~20-40 min):
-    python train_yolo.py --data dataset.yaml --epochs 50
+HOW TO TRAIN
+------------
+  laptop CPU (slow - fine for the dummy plumbing test only):
+      python train_yolo.py --epochs 8 --imgsz 320 --batch 8
+  Google Colab (RECOMMENDED for real photos - free T4 GPU):
+      1. https://colab.research.google.com  ->  New Notebook
+      2. Runtime -> Change runtime type -> T4 GPU
+      3. upload your dataset zip (or clone this repo) + train_yolo.py
+      4. !pip install ultralytics
+      5. !python train_yolo.py                       # 50 epochs, 640px
+      6. download runs/detect/train/weights/best.pt
+         -> put it here as models/onion_yolo.pt
 
-ON GOOGLE COLAB (free GPU):
-    !git clone <your-project>  (or upload the folder)
-    %cd onion-quality-analyzer
-    !pip install -q ultralytics
-    !python train_yolo.py --data dataset.yaml --epochs 50
-    then download models/onion_yolo.pt back to your laptop.
+AFTER TRAINING
+--------------
+best.pt is copied to models/onion_yolo.pt automatically. Then:
+      python yolo_mode.py photo.jpg --classifier cnn
 
-HONESTY: after training, report the TEST-set metrics YOLO prints
-(mAP50, precision, recall). Never quote numbers you have not
-measured on your own labeled test photos.
+HONEST LIMIT: visible surface quality only - a photo cannot detect
+internal rot, damage or moisture.
 """
 
 import argparse
+import glob
 import os
 import shutil
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "models")
+DATA_YAML = "dataset.yaml"
+BEST_DEST = os.path.join("models", "onion_yolo.pt")
 
 
-def check_data(data_yaml):
-    """Gentle sanity check before training starts."""
-    if not os.path.exists(data_yaml):
-        raise SystemExit(f"dataset.yaml not found: {data_yaml}\n"
-                         "See the top of this file for the format.")
-    print(f"OK: found {data_yaml}")
-    print("Reminders:")
-    print("  - classes must be: onion_good, onion_damaged, "
-          "onion_rotten, onion_sprouted")
-    print("  - images AND labels must exist for train AND val folders")
-    print("  - 150+ photos total is a sane minimum to start")
+def ensure_data_yaml(path):
+    """Write the default dataset.yaml if missing; print it either way."""
+    if os.path.exists(path):
+        print(f"Using existing {path}:\n{open(path).read()}")
+        return
+    text = ("train: dataset_yolo/train/images\n"
+            "val: dataset_yolo/val/images\n"
+            "nc: 4\n"
+            "names: ['good', 'damaged', 'rotten', 'sprouted']\n")
+    with open(path, "w") as fh:
+        fh.write(text)
+    print(f"Wrote default {path}:\n{text}")
+
+
+def find_best_pt():
+    """Newest runs/detect/*/weights/best.pt (fallback if trainer path odd)."""
+    cands = sorted(glob.glob(os.path.join("runs", "detect", "*",
+                                          "weights", "best.pt")),
+                   key=os.path.getmtime)
+    return cands[-1] if cands else None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Fine-tune YOLOv8n on onions")
-    ap.add_argument("--data", default="dataset.yaml",
-                    help="path to dataset.yaml (YOLO format)")
-    ap.add_argument("--epochs", type=int, default=50)
-    ap.add_argument("--imgsz", type=int, default=640)
+    ap = argparse.ArgumentParser(
+        description="Step 7b - fine-tune YOLOv8n on your onion data")
+    ap.add_argument("--data", default=DATA_YAML, help="dataset.yaml path")
     ap.add_argument("--model", default="yolov8n.pt",
-                    help="start from this pretrained model (nano = fastest)")
+                    help="starting weights (auto-downloads ~6 MB once)")
+    ap.add_argument("--epochs", type=int, default=50)   # spec default
+    ap.add_argument("--imgsz", type=int, default=640)   # spec default
+    ap.add_argument("--batch", type=int, default=16)    # spec default
+    ap.add_argument("--workers", type=int, default=2,
+                    help="data loading workers (low = safer on laptops)")
     args = ap.parse_args()
 
-    check_data(args.data)
+    ensure_data_yaml(args.data)
+    for split in ("train", "val"):
+        img_dir = os.path.join("dataset_yolo", split, "images")
+        if not os.path.isdir(img_dir):
+            raise SystemExit(
+                f"Missing {img_dir}.\nCreate the detection dataset first:\n"
+                "    python make_dummy_detection_dataset.py\n"
+                "(or place your real labeled data in the same layout).")
 
-    from ultralytics import YOLO      # imported here = fast --help
-    model = YOLO(args.model)          # downloads yolov8n.pt on first use
+    import torch
+    from ultralytics import YOLO
 
-    print("\n=== TRAINING STARTS (grab a chai) ===")
-    model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz)
+    if not torch.cuda.is_available():
+        print("NOTE: no GPU detected - running on CPU.")
+        if args.epochs > 10:
+            print("  With real photos this is SLOW. For a quick CPU plumbing")
+            print("  test use:  --epochs 8 --imgsz 320 --batch 8")
+            print("  For real training use Google Colab's free T4 GPU")
+            print("  (see the header of this file for the exact steps).")
 
-    # 'best.pt' = the checkpoint that scored best on the VALIDATION set
-    best = os.path.join("runs", "detect", "train", "weights", "best.pt")
-    if not os.path.exists(best):
-        # newer ultralytics may use runs/ detect/train2, train3 ...
-        runs = sorted([d for d in os.listdir("runs/detect")
-                       if d.startswith("train")],
-                      key=lambda d: os.path.getmtime(os.path.join("runs/detect", d)))
-        best = os.path.join("runs", "detect", runs[-1], "weights", "best.pt")
+    print(f"\nFine-tuning {args.model} for {args.epochs} epochs "
+          f"(imgsz={args.imgsz}, batch={args.batch})...")
+    model = YOLO(args.model)                  # 'yolov8n.pt' auto-downloads
+    model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz,
+                batch=args.batch, workers=args.workers)
 
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    dest = os.path.join(MODEL_DIR, "onion_yolo.pt")
-    shutil.copy(best, dest)
-    print(f"\n✅ Saved best model to: {dest}")
-    print("YOLO mode in the web app will now work automatically.")
+    # best.pt = the checkpoint with the best validation mAP
+    best = getattr(model.trainer, "best", None)
+    if not best or not os.path.exists(str(best)):
+        best = find_best_pt()
+    if not best:
+        raise SystemExit("Training finished but best.pt was not found - "
+                         "look inside runs/detect/")
 
-    print("\n=== QUICK VALIDATION ===")
-    metrics = model.val()             # honest numbers on the val split
-    print(metrics)
-    print("\nHONESTY REMINDER: quote ONLY these measured numbers")
-    print("(mAP50 / precision / recall) - never invent accuracy. "
-          "And remember: the app still grades VISIBLE SURFACE only.")
+    os.makedirs(os.path.dirname(BEST_DEST), exist_ok=True)
+    shutil.copy2(best, BEST_DEST)
+    print(f"\nbest.pt copied to {BEST_DEST}")
+    print("yolo_mode.py and the web app now use this model automatically.")
+
+    # ---- quick inference check with the trained model: YOLO(best.pt) ----
+    print(f"\nInference check with the trained model (YOLO('{best}')):")
+    fine = YOLO(str(best))
+    val_imgs = sorted(glob.glob(os.path.join("dataset_yolo", "val",
+                                             "images", "*.jpg")))
+    if val_imgs:
+        res = fine.predict(source=val_imgs[0], conf=0.25, verbose=False)[0]
+        print(f"  image: {val_imgs[0]}")
+        print(f"  onions found: {len(res.boxes)}")
+        for b in res.boxes[:6]:
+            x1, y1, x2, y2 = (int(v) for v in b.xyxy[0])
+            name = res.names[int(b.cls[0])]
+            print(f"    {name:<8} conf {float(b.conf[0]):.2f}   "
+                  f"box ({x1},{y1})-({x2},{y2})")
+    print("\nFull pipeline demo:")
+    print("  python yolo_mode.py dataset_yolo/demo/demo_1.jpg --classifier cnn")
+    print("Reminder: surface quality only - photos cannot see internal rot.")
 
 
 if __name__ == "__main__":

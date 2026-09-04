@@ -4,8 +4,18 @@ test_images/
 runs/
 models/
 dataset/
+dataset_yolo/
 uploads/
 outputs/
+image-search/
+onion-opencv-course/
+
+# Deep-learning model checkpoints (Vercel runs the light classic-CV
+# pipeline; torch/ultralytics would blow the 250 MB function limit)
+*.pt
+*.h5
+*.onnx
+*.pth
 
 # Python caches
 .venv/
@@ -15,3 +25,4 @@ __pycache__/
 
 # Local dev files
 *.log
+dummy_preview.jpg

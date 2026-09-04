@@ -2,28 +2,38 @@
 # -*- coding: utf-8 -*-
 """
 =====================================================================
- yolo_mode.py - YOLOv8 AI DETECTION MODE (the "advanced AI" upgrade)
+ yolo_mode.py - Step 7a: YOLOv8 DETECTION + grading (the "AI upgrade")
  Smart India Hackathon 2026 - Problem SIH26031
 =====================================================================
 
-WHAT IT DOES (simple words):
-    Classic CV mode finds onions with thresholds + contours.
-    THIS mode uses a NEURAL NETWORK (YOLOv8) to find each onion in
-    one shot, then reuses the SAME size + color + grading logic on
-    every detection. Detection by AI -> measurement/grading shared.
+PIPELINE (one photo -> digital quality report):
+    1. YOLOv8 finds every onion in the photo and draws a box around it.
+    2. Each boxed onion is classified GOOD / DAMAGED / ROTTEN / SPROUTED
+       by one of three classifiers (flag --classifier):
+           cnn   crop the box -> Step 5/6 CNN classifier (recommended:
+                 ResNet18 from Step 6a, falls back to the Step 5a CNN)
+           yolo  use the YOLO class directly (only meaningful once YOLO
+                 was fine-tuned with the 4 quality classes, Step 7b)
+           rules the classic color rules from grader.py (baseline)
+    3. Size in mm comes from grader.py's calibration (a coin in the
+       photo, or an honest "assumed size" ESTIMATE without one).
+    4. UNDERSIZED stays a SIZE rule (like grader.py), not a class.
+    5. Grading reuses grader.py exactly: Grade A (45-65 mm) / URS
+       (35-70 mm) / REJECT + batch percentages for the report.
 
-⚠️ HONEST LIMIT (very important - do not remove):
-    The free pretrained model (yolov8n.pt) is trained on the COCO
-    dataset, which has NO "onion" class. So it CANNOT detect onions
-    out of the box. You must FIRST fine-tune it on your own labeled
-    onion photos (train_yolo.py, ideally on Google Colab GPU) and
-    save the result to:
-        models/onion_yolo.pt
-    Until that file exists, this module raises ModelNotTrained and
-    the app keeps using Classic CV. We do NOT fake YOLO results.
+⚠️ HONEST LIMITS (do not remove):
+    - Visible surface quality only: a photo cannot detect internal rot,
+      damage or moisture.
+    - The stock pretrained yolov8n.pt is trained on COCO, which has NO
+      onion class - it cannot find onions out of the box. For real
+      results fine-tune first (train_yolo.py, Step 7b) -> the best
+      weights are saved as models/onion_yolo.pt. The web app uses that
+      file and honestly refuses to fake YOLO results without it.
 
-HOW TO RUN (after training):
-    python yolo_mode.py test_images/test_batch_1.jpg --coin-mm 27
+HOW TO RUN (CLI):
+    python yolo_mode.py photo.jpg --coin-mm 27 --classifier cnn
+    python yolo_mode.py photo.jpg --classifier yolo        # fine-tuned only
+    python yolo_mode.py photo.jpg --model yolov8n.pt       # demo: stock COCO
 """
 
 import argparse
@@ -39,29 +49,32 @@ import grader
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "models")
-CUSTOM_MODEL = os.path.join(MODEL_DIR, "onion_yolo.pt")
+CUSTOM_MODEL = os.path.join(MODEL_DIR, "onion_yolo.pt")   # fine-tuned model
+STOCK_MODEL = "yolov8n.pt"                                # COCO demo model
 
-# class names your trained model should use (train_yolo.py explains)
+# class names of the FINE-TUNED model (train_yolo.py) -> grader labels.
+# Legacy 'onion_*' names from older train runs are accepted too.
 ONION_CLASS_NAMES = {
-    "onion_good": None,      # None -> let the color rules decide
-    "onion_damaged": None,
-    "onion_rotten": None,
-    "onion_sprouted": "SPROUTED",   # green shoot is very reliable
-    "onion": None,
+    "good": "GOOD", "damaged": "DAMAGED",
+    "rotten": "ROTTEN", "sprouted": "SPROUTED",
+    "onion_good": "GOOD", "onion_damaged": "DAMAGED",
+    "onion_rotten": "ROTTEN", "onion_sprouted": "SPROUTED",
+    "onion": None,          # generic box -> let the classifier decide
 }
 
 TRAIN_HELP = (
     "YOLO model not found: models/onion_yolo.pt\n"
-    "The free pretrained YOLOv8 does NOT know onions (COCO has no\n"
-    "onion class) - it must be fine-tuned on YOUR labeled photos.\n"
+    "The stock pretrained YOLOv8 does NOT know onions (COCO has no onion\n"
+    "class) - it must be fine-tuned on labeled onion photos first.\n"
     "How to fix (honest way):\n"
-    "  1. Take 150-300+ photos of onions in different light.\n"
-    "  2. Label them (boxes) with Roboflow / LabelImg / CVAT\n"
-    "     using classes: onion_good, onion_damaged, onion_rotten,\n"
-    "     onion_sprouted. Export in 'YOLO' format -> dataset.yaml.\n"
-    "  3. Train (laptop CPU is slow - Colab T4 GPU is better):\n"
-    "        python train_yolo.py --data dataset.yaml\n"
-    "  4. The script saves models/onion_yolo.pt - then YOLO mode works."
+    "  1. Real photos: take 150-300+ photos in different light and label\n"
+    "     them with Roboflow / LabelImg / CVAT using classes:\n"
+    "       good, damaged, rotten, sprouted   (export 'YOLO' format)\n"
+    "     OR, for a plumbing test right now:\n"
+    "       python make_dummy_detection_dataset.py\n"
+    "  2. Train (CPU test or Google Colab T4 GPU for real data):\n"
+    "       python train_yolo.py --epochs 8 --imgsz 320 --batch 8\n"
+    "  3. train_yolo.py saves models/onion_yolo.pt - then YOLO mode works."
 )
 
 
@@ -69,7 +82,7 @@ class ModelNotTrained(Exception):
     """Raised when models/onion_yolo.pt does not exist yet."""
 
 
-_model_cache = None
+_model_cache = (None, None)      # (path, YOLO model)
 
 
 def model_ready():
@@ -77,25 +90,33 @@ def model_ready():
     return os.path.exists(CUSTOM_MODEL)
 
 
-def get_model():
-    """Load the fine-tuned model once, then reuse it (fast)."""
+def get_model(path=None):
+    """Load a YOLO model once, then reuse it (fast).
+
+    path=None -> the fine-tuned models/onion_yolo.pt (app default) and
+    raises ModelNotTrained if it is missing. A path can be given for the
+    CLI demo (e.g. the stock 'yolov8n.pt').
+    """
     global _model_cache
-    if not model_ready():
-        raise ModelNotTrained(TRAIN_HELP)
-    if _model_cache is None:
-        from ultralytics import YOLO          # lazy import = faster app start
-        _model_cache = YOLO(CUSTOM_MODEL)
-    return _model_cache
+    if path is None:
+        if not model_ready():
+            raise ModelNotTrained(TRAIN_HELP)
+        path = CUSTOM_MODEL
+    if _model_cache[0] != path:
+        from ultralytics import YOLO          # lazy import = faster start
+        _model_cache = (path, YOLO(path))
+    return _model_cache[1]
 
 
-def detect(bgr, conf=0.25):
+def detect(bgr, conf=0.25, model_path=None):
     """Run YOLO on one BGR frame -> list of detections."""
-    model = get_model()
+    model = get_model(model_path)
     res = model.predict(source=bgr, conf=conf, verbose=False)[0]
     names = res.names
     out = []
     for b in res.boxes:
-        cls_name = names.get(int(b.cls[0]), "")
+        cls_name = names.get(int(b.cls[0]), "") if isinstance(names, dict) \
+            else names[int(b.cls[0])]
         x1, y1, x2, y2 = (float(v) for v in b.xyxy[0])
         out.append({
             "bbox_px": [int(x1), int(y1), max(1, int(x2 - x1)),
@@ -107,6 +128,60 @@ def detect(bgr, conf=0.25):
     return out
 
 
+# ----------------------------------------------------------------------------
+# the CNN classifier from Step 5/6 (used when --classifier cnn)
+# ----------------------------------------------------------------------------
+_cnn_cache = {}
+
+
+def _cnn_paths():
+    """Candidate checkpoints, best first (Step 6a ResNet18 > Step 5a CNN)."""
+    return [os.path.join(BASE_DIR, "onion_resnet18.pt"),
+            os.path.join(BASE_DIR, "onion_cnn.pt")]
+
+
+def _get_cnn():
+    """Load the best available classifier ONCE. None if never trained."""
+    if _cnn_cache:
+        return _cnn_cache
+    import torch
+    from pytorch_cnn import EXPECTED_CLASSES, build_model, eval_tfms
+    for path in _cnn_paths():
+        if not os.path.exists(path):
+            continue
+        if "resnet18" in os.path.basename(path):
+            from transfer_learning import build_resnet18
+            model = build_resnet18()
+            name = "ResNet18 transfer (Step 6a)"
+        else:
+            model = build_model()
+            name = "custom CNN (Step 5a)"
+        model.load_state_dict(torch.load(path, map_location="cpu"))
+        model.eval()
+        _cnn_cache.update(model=model, name=name,
+                          classes=EXPECTED_CLASSES, eval_tfms=eval_tfms)
+        return _cnn_cache
+    return None
+
+
+def classify_crop(bgr_crop):
+    """Classify ONE BGR crop -> (LABEL, confidence) or None."""
+    cnn = _get_cnn()
+    if cnn is None:
+        return None
+    import torch                              # local import: fast startup
+    from PIL import Image
+    rgb = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2RGB)
+    x = cnn["eval_tfms"](Image.fromarray(rgb)).unsqueeze(0)
+    with torch.no_grad():
+        probs = torch.softmax(cnn["model"](x), dim=1)[0]
+    idx = int(probs.argmax())
+    return cnn["classes"][idx].upper(), float(probs[idx])
+
+
+# ----------------------------------------------------------------------------
+# size calibration - exactly like grader.py (coin = the ruler)
+# ----------------------------------------------------------------------------
 def _coin_scale(bgr, hsv, coin_mm, distance_mm=None, assume_mm=None):
     """Find the coin exactly like grader.py does (the ruler).
     No coin? Same honest estimate modes as grader.analyze."""
@@ -134,12 +209,27 @@ def _coin_scale(bgr, hsv, coin_mm, distance_mm=None, assume_mm=None):
     return coin, px_per_mm, source, warnings
 
 
-def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
-    """Apply the SAME size + color + grade logic to YOLO detections."""
+# ----------------------------------------------------------------------------
+# measure + classify + grade every detection
+# ----------------------------------------------------------------------------
+def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
+                       classifier="cnn"):
+    """Apply the SAME size + grade logic to YOLO detections.
+
+    classifier: 'cnn'   crop each box -> Step 5/6 CNN classifier
+                'yolo'  trust the fine-tuned YOLO class
+                'rules' classic color rules from grader.py
+    """
     gray, _ = grader.make_object_mask(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     coin, px_per_mm, scale_source, warnings = _coin_scale(
         bgr, hsv, coin_mm, distance_mm=distance_mm, assume_mm=assume_mm)
+
+    cnn = _get_cnn() if classifier == "cnn" else None
+    if classifier == "cnn" and cnn is None:
+        warnings.append("No trained CNN found (onion_resnet18.pt / "
+                        "onion_cnn.pt) - falling back to YOLO class and "
+                        "color rules. Train Step 5a/6a first for CNN labels.")
 
     onions = []
     for i, d in enumerate(dets, 1):
@@ -147,25 +237,44 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
         H, W = bgr.shape[:2]
         x, y = max(0, x), max(0, y)
         w, h = min(w, W - x), min(h, H - y)
+        crop = bgr[y:y + h, x:x + w]
         crop_gray = gray[y:y + h, x:x + w]
         crop_hsv = hsv[y:y + h, x:x + w]
 
         # build an onion mask INSIDE the box (Otsu again, on the crop)
         _, cmask = grader.make_object_mask(
-            cv2.cvtColor(cv2.cvtColor(bgr[y:y + h, x:x + w],
-                                      cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR))
+            cv2.cvtColor(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY),
+                         cv2.COLOR_GRAY2BGR))
         if int(cmask.sum()) < 50:          # segmentation failed -> use box
             cmask = np.full((h, w), 255, np.uint8)
 
         feats = grader.onion_features(crop_gray, crop_hsv, cmask)
         d_mm = ((w + h) / 2.0) / px_per_mm     # box average width/height
-        label = d["label_hint"] or grader.classify(feats, d_mm)
+
+        # ---- label: CNN on the crop, else YOLO class, else color rules ----
+        label, source, class_conf = None, None, None
+        if cnn is not None and w >= 8 and h >= 8:
+            r = classify_crop(crop)
+            if r is not None:
+                label, class_conf = r
+                source = "cnn"
+        if label is None and d["label_hint"] is not None:
+            label, source, class_conf = d["label_hint"], "yolo", d["conf"]
+        if label is None:
+            label = grader.classify(feats, d_mm)
+            source = "rules"
+
+        # UNDERSIZED stays a SIZE rule - exactly like grader.py
+        if label == "GOOD" and d_mm < grader.UNDERSIZED_MM:
+            label = "UNDERSIZED"
+
         onions.append({
-            "id": i, "label": label,
+            "id": i, "label": label, "label_source": source,
+            "class_conf": (round(class_conf, 3) if class_conf else None),
             "diameter_mm": round(d_mm, 1),
             "grade": grader.grade_of(label, d_mm),
             "mass_g": round(grader.weight_of(d_mm), 1),
-            "confidence": d["conf"],       # YOLO detection confidence
+            "confidence": d["conf"],       # YOLO box confidence
             "yolo_class": d["yolo_class"],
             "features": {k: round(v, 4) for k, v in feats.items()},
             "texture_std": round(float(crop_gray[cmask > 0].std()), 1),
@@ -213,6 +322,7 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
         o["grade"] = grader.grade_of(o["label"], o["diameter_mm"],
                                      full_visible=(o["layer"] == "L1"))
 
+    cnn_txt = f" | classifier: {cnn['name']}" if cnn else ""
     rep = {
         "batch_id": "YOLO-" + datetime.now().strftime("%Y%m%d-%H%M%S"),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -221,6 +331,7 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
         "px_per_mm": round(px_per_mm, 3),
         "scale_source": scale_source,
         "detector": "YOLOv8 (fine-tuned onion model)",
+        "classifier": f"{classifier}{cnn_txt}",
         "onion_count": n,
         "grade_counts": gc,
         "grade_percent": gp,
@@ -229,6 +340,9 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
         "watershed_splits": 0,     # YOLO separates touching onions by itself
         "estimated_weight_kg": round(tot_kg, 2),
         "bags_50kg": round(tot_kg / 50.0, 1),
+        "weight_k": grader.WEIGHT_K_G_PER_MM3,     # mass model constant
+        "summary": grader.build_summary(n, 0, gc, gp, cc, tot_kg,
+                                        scale_source, qflags),
         "coverage_percent": None,
         "quality_flags": qflags,
         "layer_analysis": grader.build_layer_analysis(onions) if n else
@@ -236,17 +350,22 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None):
         "onions": onions,
         "warnings": warnings,
         "disclaimer": grader.DISCLAIMER,
-        "settings": {"mode": "yolo", "coin_mm": coin_mm},
+        "settings": {"mode": "yolo", "coin_mm": coin_mm,
+                     "classifier": classifier},
     }
     return rep, coin, bgr
 
 
+# ----------------------------------------------------------------------------
+# drawing (spec: cv2.rectangle + putText for every box + "class conf%")
+# ----------------------------------------------------------------------------
 def annotate(rep, bgr, coin):
     """Draw YOLO boxes + labels + strips (no contour lines here)."""
     canvas = bgr.copy()
     jobs = []
     if coin is not None:
-        cv2.circle(canvas, coin["center"], int(coin["d_px"] / 2), (255, 255, 0), 2)
+        cv2.circle(canvas, coin["center"], int(coin["d_px"] / 2),
+                   (255, 255, 0), 2)
         jobs.append((f"COIN {rep['coin_mm']:g} mm",
                      coin["center"][0] - 40,
                      coin["center"][1] - int(coin["d_px"] / 2) - 22,
@@ -255,15 +374,21 @@ def annotate(rep, bgr, coin):
         x, y, w, h = o["bbox"]
         color = grader.CLASS_COLORS[o["label"]]
         cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 2)
-        conf_txt = f" {o['confidence']*100:.0f}%" if "confidence" in o else ""
+        # "class conf%" next to every box (spec format)
+        conf_txt = ""
+        if o.get("class_conf") is not None:
+            conf_txt = f" {o['class_conf'] * 100:.0f}%"
+        src = o.get("label_source", "")
         jobs.append((f"#{o['id']} {o['label']} {o['diameter_mm']:.0f}mm"
-                     f"{conf_txt} {o['grade']}", x, y, color))
+                     f"{conf_txt} {o['grade']}[{src}]",
+                     x, y, color))
 
     jobs.sort(key=lambda j: (j[1], j[2]))
     used = []
     for text, lx, ly, color in jobs:
         lx, ly = max(0, lx), max(0, ly)
-        (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX,
+                                         0.55, 1)
         rw, rh = tw + 8, th + base + 6
         rect = [lx, ly, lx + rw, ly + rh]
         hits = lambda a, b: not (a[2] < b[0] or b[2] < a[0]
@@ -281,7 +406,8 @@ def annotate(rep, bgr, coin):
     p = rep["grade_percent"]
     cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 30), (30, 90, 40), -1)
     cv2.putText(canvas, f"YOLOv8  onions: {rep['onion_count']}  "
-                f"A: {p['A']:.0f}%  URS: {p['URS']:.0f}%  REJ: {p['REJECT']:.0f}%",
+                f"A: {p['A']:.0f}%  URS: {p['URS']:.0f}%  "
+                f"REJ: {p['REJECT']:.0f}%",
                 (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255),
                 1, cv2.LINE_AA)
     strip_y = canvas.shape[0] - 26
@@ -294,21 +420,32 @@ def annotate(rep, bgr, coin):
     return canvas
 
 
+# ----------------------------------------------------------------------------
+# entry points (the web app uses these two)
+# ----------------------------------------------------------------------------
 def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
-            distance_mm=None, assume_mm=None):
+            distance_mm=None, assume_mm=None, model_path=None,
+            classifier="cnn", conf=0.25):
     """Full YOLO analysis of a photo (path) or frame (numpy BGR).
-    distance_mm/assume_mm are forwarded to the shared no-coin scale
-    logic inside _measure_and_grade."""
+
+    model_path: None = the fine-tuned models/onion_yolo.pt (raises
+    ModelNotTrained when missing - the web app relies on that honesty).
+    The CLI can pass the stock 'yolov8n.pt' for a demo instead.
+    classifier: 'cnn' | 'yolo' | 'rules' (see module docstring).
+    """
     in_memory = isinstance(image, np.ndarray)
     bgr = grader._fit_width(cv2.imread(image)) if not in_memory \
         else grader._fit_width(image)
     if bgr is None:
         raise FileNotFoundError(f"Could not read image: {image}")
 
-    dets = detect(bgr)
+    dets = detect(bgr, conf=conf, model_path=model_path)
     rep, coin, bgr = _measure_and_grade(bgr, dets, coin_mm,
                                         distance_mm=distance_mm,
-                                        assume_mm=assume_mm)
+                                        assume_mm=assume_mm,
+                                        classifier=classifier)
+    if model_path:
+        rep["detector"] = f"YOLOv8 ({os.path.basename(model_path)})"
     if batch_id:
         rep["batch_id"] = batch_id
     if not in_memory:
@@ -335,20 +472,54 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     return rep
 
 
-def analyze_frame(bgr, coin_mm=27.0):
+def analyze_frame(bgr, coin_mm=27.0, classifier="cnn"):
     """Live-mode entry: YOLO on one frame, no files, JSON-safe output."""
-    rep = analyze(bgr, coin_mm=coin_mm, out_dir=None)
-    return rep
+    return analyze(bgr, coin_mm=coin_mm, out_dir=None, classifier=classifier)
 
 
+# ----------------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="YOLOv8 onion detector")
+    ap = argparse.ArgumentParser(
+        description="Step 7a - YOLOv8 onion detection + grading")
     ap.add_argument("image", help="photo path")
-    ap.add_argument("--coin-mm", type=float, default=27.0)
+    ap.add_argument("--coin-mm", type=float, default=27.0,
+                    help="coin diameter for calibration (default Rs.10: 27)")
+    ap.add_argument("--classifier", choices=["cnn", "yolo", "rules"],
+                    default="cnn",
+                    help="who classifies each crop (default: cnn)")
+    ap.add_argument("--model", default="auto",
+                    help="'auto' = fine-tuned model if present, else stock "
+                    "yolov8n.pt (demo only). Or give a .pt path.")
+    ap.add_argument("--conf", type=float, default=0.25,
+                    help="YOLO box confidence threshold")
     args = ap.parse_args()
+
+    if args.model != "auto":
+        model_path = args.model
+        print(f"Using model: {model_path}")
+    elif model_ready():
+        model_path = None                     # -> fine-tuned CUSTOM_MODEL
+        print(f"Using fine-tuned model: {CUSTOM_MODEL}")
+    else:
+        model_path = STOCK_MODEL
+        print("=" * 68)
+        print("WARNING: no fine-tuned model found - using the STOCK")
+        print(f"pretrained {STOCK_MODEL} (COCO classes). It has NO onion")
+        print("class, so expect few or zero sensible detections.")
+        print("Fine-tune first for real results:  python train_yolo.py")
+        print("=" * 68)
+
     try:
-        rep = analyze(args.image, coin_mm=args.coin_mm)
+        rep = analyze(args.image, coin_mm=args.coin_mm,
+                      model_path=model_path, classifier=args.classifier,
+                      conf=args.conf)
         grader.print_report(rep)
+        if rep["files"]:
+            print("\nSaved:")
+            for f in rep["files"]:
+                print("  " + f)
     except ModelNotTrained as exc:
         print(str(exc))
         raise SystemExit(1)

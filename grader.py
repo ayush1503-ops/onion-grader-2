@@ -28,7 +28,9 @@ THE PIPELINE (classic computer vision - no training needed):
       7. WATERSHED (cv2.watershed)  -> split onions that TOUCH
       8. coin detection             -> convert pixels -> millimetres
       9. HSV + darkness features    -> measured INSIDE each onion only
-     10. rule-based classification  -> GOOD/DAMAGED/ROTTEN/SPROUTED/UNDERSIZED
+     10. classification             -> trained random forest (models/onion_clf.json)
+                                        + measured green-sprout rule
+                                        -> GOOD/DAMAGED/ROTTEN/SPROUTED/UNDERSIZED
      11. grading                    -> Grade A / URS / REJECT + percentages
      12. reports                    -> the 4 files above
 
@@ -39,6 +41,13 @@ HONESTY RULES (never remove this):
     * All thresholds below are DEMO STARTING POINTS. They are NOT
       verified accuracy. Real accuracy must be measured on a labeled
       test set (photos checked by a human expert).
+    * The surface classifier is a random forest trained on 12 real
+      labelled photos (augmented), 3 healthy red-onion pile photos
+      (ASSUMED healthy - stock/market photos) and synthetic onions.
+      Its honest held-out score (leave-one-real-photo-out) is printed
+      by train_classifier.py and stored in the model file's meta.
+      12 photos is a SMALL sample - do not quote it as production
+      accuracy.
 
 HOW TO RUN:
     python grader.py <photo.jpg> --coin-mm 27
@@ -61,6 +70,11 @@ from PIL import Image, ImageDraw, ImageFont
 # ------------------------------------------------------------------
 MAX_WIDTH         = 1200   # images wider than this are resized down
 MIN_AREA_PX       = 1500   # ignore blobs smaller than this (specks/noise)
+# "ONLY ONIONS" rule (user policy: count the real onions, not bits):
+# a piece ~8x smaller than the BIGGEST onion in the same photo is not a
+# whole onion of that batch - it is a fragment, sack bit, shadow or
+# vignette. Onions in one photo differ by ~2x at most, never 10x.
+MIN_REL_SIZE      = 0.12
 MIN_ONION_FRAC    = 0.20   # SECONDARY-pass candidates must also be at least
                            # this fraction of the median onion area. The old
                            # absolute 1500 px floor let TEXTURED backgrounds
@@ -73,6 +87,11 @@ BLUR_K            = (7, 7) # Gaussian blur kernel size
 MORPH_K           = (7, 7) # morphology kernel size
 MERGED_FACTOR     = 1.3    # blob area > 1.3 x median  -> maybe 2 touching onions
 CIRC_SPLIT_MAX    = 0.75   # ...and circularity < 0.75 (not round) -> try split
+# a REAL split of N touching onions gives N pieces of SIMILAR size;
+# texture noise gives chunks + slivers. If the biggest piece is more
+# than 3.5x the smallest, the "split" is skin texture, not onions.
+# (measured: real splits 1.0-3.1x, texture splits 3.7-6.5x and worse)
+SPLIT_SPREAD_MAX  = 3.5
 COIN_CIRC_MIN     = 0.80   # a coin must be very round
 COIN_AREA_MAX     = 0.60   # ...and much smaller than a typical onion
 COIN_SAT_MAX      = 90     # ...and metallic: mean saturation this low
@@ -121,12 +140,30 @@ GRADE_A_MM    = (45.0, 65.0)   # Grade A window
 URS_MM        = (35.0, 70.0)   # URS = relaxed specification window
 UNDERSIZED_MM = 35.0           # below this diameter -> "UNDERSIZED"
 
-# --- classification thresholds (DEMO values - MUST be tuned on real data!) ---
-GREEN_SPROUTED = 0.02  # >= 2%  green pixels       -> SPROUTED
-DARK_ROTTEN    = 0.12  # >= 12% very dark pixels   -> ROTTEN
-BROWN_ROTTEN   = 0.40  # >= 40% dark-brown pixels  -> ROTTEN
-DARK_DAMAGED   = 0.04  # >= 4%  very dark pixels   -> DAMAGED
-BROWN_DAMAGED  = 0.15  # >= 15% dark-brown pixels  -> DAMAGED
+# --- classification thresholds --------------------------------------------
+# Tuned 2026-09 on 12 real labelled photos (3 FRESH, 2 DAMAGED, 4 ROTTEN,
+# 3 SPROUTED - image-search/) PLUS the 7 synthetic test images, by
+# measuring the actual green/brown/dark values of every onion:
+#   fresh red onion:  brown ~0.01, dark ~0.25  (dark skin, NO brown)
+#   fresh yellow onion: brown ~0.18, dark ~0.06 (papery skin, NOT dark)
+#   rotten:           brown >= 0.28 AND dark >= 0.19 (both together)
+#   sprout:           vivid green >= 0.15 in the TOP-CENTRE of the onion
+# A single-feature rule cannot work: fresh RED onions are dark, fresh
+# YELLOW onions are brown - only the COMBINATION (dark AND brown)
+# separates rot from healthy skin of either colour.
+GREEN_SPROUTED = 0.10  # >= 10% VIVID green in the onion's top-centre
+                       # window -> SPROUTED (a sprout grows out of the
+                       # top; green BACKGROUND around the onion sits at
+                       # the sides/bottom and is ignored)
+DARK_ROTTEN    = 0.15  # very dark AND brown together -> ROTTEN
+BROWN_ROTTEN   = 0.15  # (both must be >= 0.15)
+BROWN_ROTTEN_HI = 0.45 # or VERY brown alone (>= 45%) -> ROTTEN
+DARK_DAMAGED   = 0.28  # >= 28% very dark pixels     -> DAMAGED
+BROWN_DAMAGED  = 0.19  # >= 19% dark-brown pixels    -> DAMAGED
+                       # (fresh yellow-onion skin measures up to ~0.18
+                       # brown - 0.19 keeps it GOOD; a real bruise/patch
+                       # reads >= 0.22. Known limit: a LIGHT bruise can
+                       # stay under 0.19 and pass as GOOD.)
 
 DISCLAIMER = ("VISIBLE SURFACE ANALYSIS ONLY - a normal photo cannot detect "
               "internal rot, internal damage or internal moisture. "
@@ -378,7 +415,61 @@ def watershed_split(bgr, contour, expected=2):
     return [contour]
 
 
-def hough_split(bgr, mask, contour, median_area):
+def _dt_disc_ratio(shape, contour):
+    """Distance-transform 'how many onions deep is this blob' estimate.
+
+    Fills the blob, measures the deepest point (distance transform
+    max = radius of the biggest disc that fits inside), and returns
+    (d_max, blob_area / disc_area). ONE round onion gives ~1.0 (it IS
+    one disc). N touching onions give roughly N (their union holds N
+    discs of one-onion radius). The photo BORDER counts as background
+    (we pad with zeros) - otherwise a blob touching the edge looks
+    infinitely deep.
+    """
+    m = np.zeros(shape[:2], np.uint8)
+    cv2.drawContours(m, [contour], -1, 255, -1)
+    m = cv2.copyMakeBorder(m, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=0)
+    dist = cv2.distanceTransform(m, cv2.DIST_L2, 5)
+    d_max = float(dist.max())
+    disc = math.pi * d_max * d_max
+    ratio = cv2.contourArea(contour) / disc if disc > 0 else 99.0
+    return d_max, ratio
+
+
+def _split_pieces_consistent(pieces):
+    """Are these split pieces PLAUSIBLY one onion each?
+
+    A real split of N touching onions gives N pieces of SIMILAR size
+    (each piece ~ one onion). Texture noise (skin spots, mold, sack
+    weave) gives a few big chunks + many slivers - sizes all over the
+    place. Rule: the biggest piece may be at most SPLIT_SPREAD_MAX
+    times the smallest, else the split is garbage -> reject it.
+    """
+    if len(pieces) < 2:
+        return False
+    areas = [cv2.contourArea(p) for p in pieces]
+    return max(areas) <= SPLIT_SPREAD_MAX * max(1.0, min(areas))
+
+
+def _split_covers_blob(pieces, contour, min_frac=0.5):
+    """Do the split pieces actually cover most of the blob?
+
+    A REAL split tiles the blob: watershed pieces cover ~all of it,
+    Hough circle pieces cover most of it (they miss the gaps between
+    onions). A FAKE split - two small skin-texture circles found on
+    ONE big close-up onion - covers only a small fraction of the blob.
+    If the pieces cover less than half the blob, whatever was "found"
+    is not the blob's content -> reject, keep the blob whole.
+    """
+    blob_area = cv2.contourArea(contour)
+    if blob_area <= 0:
+        return False
+    covered = sum(cv2.contourArea(p) for p in pieces)
+    return covered >= min_frac * blob_area
+
+
+def hough_split(bgr, mask, contour, median_area, r_hint=None,
+                max_circles=None):
     """
     Rescue split for OCCLUDED piles (one onion lying ON another).
 
@@ -395,6 +486,16 @@ def hough_split(bgr, mask, contour, median_area):
       3. cv2.watershed refines the cut along the REAL edges (the rim
          between the two onions), so each onion keeps its true surface.
 
+    r_hint: optional onion radius in px. Pass it when median_area is
+    meaningless for sizing - the HEAP case (one merged blob): the
+    median of ONE blob is the blob itself, so the derived radius would
+    be huge and every circle would be rejected.
+
+    max_circles: hard cap on how many onions this blob may contain
+    (from the distance-transform depth estimate). Hough happily finds
+    9 weak "circles" of skin texture on ONE big close-up onion - the
+    cap keeps only the strongest few.
+
     Returns (regions, vis_hints): contours plus a visibility guess
     per region (None = measure with the convex-hull extent later).
     """
@@ -406,7 +507,7 @@ def hough_split(bgr, mask, contour, median_area):
     roi = cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     roi = cv2.GaussianBlur(roi, (7, 7), 0)
 
-    r_med = math.sqrt(median_area / math.pi)
+    r_med = float(r_hint) if r_hint else math.sqrt(median_area / math.pi)
     circles = cv2.HoughCircles(roi, cv2.HOUGH_GRADIENT, dp=1.2,
                                minDist=0.6 * r_med, param1=110, param2=25,
                                minRadius=int(0.55 * r_med),
@@ -428,6 +529,10 @@ def hough_split(bgr, mask, contour, median_area):
             accepted.append((cx, cy, r))
     if not accepted:
         return [], []
+    if max_circles and len(accepted) > max_circles:
+        # keep only the STRONGEST circles (HoughCircles returns them
+        # roughly in vote order - strongest first)
+        accepted = accepted[:int(max_circles)]
 
     h_roi, w_roi = blob.shape
     # SMALL circular cores as watershed seeds. Do NOT seed the whole
@@ -453,7 +558,11 @@ def hough_split(bgr, mask, contour, median_area):
     markers[seed_img > 0] = seed_img[seed_img > 0]
     cv2.watershed(bgr[y0:y1, x0:x1], markers)
 
-    min_area = max(MIN_AREA_PX, 0.15 * median_area)
+    # minimum piece size: relative to the REFERENCE onion size. In heap
+    # mode (r_hint given) median_area is the whole merged blob, so we
+    # size the threshold from the hinted onion circle instead.
+    ref_area = (math.pi * r_med * r_med) if r_hint else median_area
+    min_area = max(MIN_AREA_PX, 0.15 * ref_area)
     regions, vis_hints = [], []
     # the flooded onion regions. For a circle-piece the best occlusion
     # measure is: visible area / true circle area (the Hough circle IS
@@ -471,16 +580,32 @@ def hough_split(bgr, mask, contour, median_area):
 
     # the area the BACKGROUND flood claimed inside the blob = exposed
     # surface of an onion Hough never found a circle for (no hint ->
-    # the caller falls back to the convex-hull extent)
+    # the caller falls back to the convex-hull extent).
+    # When max_circles is set, the caller capped how many onions this
+    # blob may contain. Leftover pieces are still allowed - in a real
+    # pile they ARE onions the circles missed - but only until the cap
+    # is reached (3 capped circles + 3 leftovers would bypass the cap
+    # and turn one close-up onion into 6 "onions").
+    leftover_budget = None
+    if max_circles:
+        if len(regions) < 2:
+            return [], []
+        leftover_budget = int(max_circles) - len(regions)
     leftover = (markers == 1) & blob
     if int(leftover.sum()) >= 0.35 * median_area:
         piece = leftover.astype(np.uint8) * 255
         cnts, _ = cv2.findContours(piece, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
-        for c2 in cnts:
-            if cv2.contourArea(c2) >= min_area:
-                regions.append(c2 + np.array([x0, y0]))
-                vis_hints.append(None)
+        lpieces = [c2 for c2 in cnts if cv2.contourArea(c2) >= min_area]
+        # biggest leftovers first - they are the most onion-like
+        lpieces.sort(key=cv2.contourArea, reverse=True)
+        for c2 in lpieces:
+            if leftover_budget is not None and leftover_budget <= 0:
+                break               # cap reached - stop adding pieces
+            regions.append(c2 + np.array([x0, y0]))
+            vis_hints.append(None)
+            if leftover_budget is not None:
+                leftover_budget -= 1
 
     if len(regions) < 2:
         return [], []
@@ -716,41 +841,250 @@ def find_coin(blobs, hsv, median_area):
 # ------------------------------------------------------------------
 def onion_features(gray, hsv, mask):
     """
+    FEATURE ENGINE v3 - variety-invariant surface inspection.
+
     Returns fractions (0..1) of the onion's visible surface that are:
-      green  - a green shoot (sprout)
-      brown  - DARK brown skin (defects are darker than healthy skin)
-      dark   - very dark gray (rot / deep damage)
+      green  - VIVID green pixels anywhere in the onion region
+      green_top - VIVID green in the onion's TOP-CENTRE window (where a
+               sprout grows; green BACKGROUND at the sides is ignored)
+      brown  - DARK brown skin (absolute, for the report display)
+      dark   - very dark gray (absolute, for the report display)
+    plus NEW relative features (the "advanced" part):
+      dark_rel  - fraction of INTERIOR pixels much DARKER than their
+                  LOCAL smooth neighbourhood (bruise / rot patch). The
+                  smooth sphere shading is absorbed by the baseline, and
+                  a healthy but naturally DARK-RED onion is uniform, so
+                  dark_rel stays ~0 -> no more false "rotten" on red
+                  varieties. Absolute thresholds punished whole varieties.
+      brown_rel - same, but the dark patch is also brown-hued (soggy rot)
+      deep_rel  - fraction EXTREMELY darker locally (V < baseline - 70):
+                  real rot / mold, not just shading or a light bruise
+      patch_frac - the LARGEST connected dark patch as a fraction of the
+                  interior. A bruise is one contiguous patch; scattered
+                  papery speckles are not.
+      v_std   - brightness variation inside the onion (mottled skin?)
+      tex_var - micro-texture on a size-normalised crop: dry papery
+                  skin is busy, a soggy rot patch is smooth and flat
+    The relative features are measured on an ERODED "interior" mask -
+    away from the edges, so shadows between touching onions and
+    background bleed cannot fake defects any more.
     """
     m = mask > 0
-    total = int(m.sum())
-    if total == 0:
-        return {"green": 0.0, "brown": 0.0, "dark": 0.0}
-    H = hsv[:, :, 0][m].astype(np.int32)
-    S = hsv[:, :, 1][m].astype(np.int32)
-    V = hsv[:, :, 2][m].astype(np.int32)
-    G = gray[m].astype(np.int32)
-    green = float(np.mean((H >= 35) & (H <= 85) & (S >= 60) & (V >= 40)))
+    if not m.any():
+        return {k: 0.0 for k in FEATURE_ORDER_V3}
+
+    # vivid-green map for the WHOLE image (the top-centre window below
+    # needs pixel POSITIONS, so we cannot use the masked 1-D arrays)
+    Hf = hsv[:, :, 0].astype(np.int32)
+    Sf = hsv[:, :, 1].astype(np.int32)
+    Vf = hsv[:, :, 2].astype(np.int32)
+    # VIVID green only (S>=100, V>=90): a real shoot is saturated and
+    # bright; dull green shadows / sack weave / pale background are not
+    vivid = (Hf >= 35) & (Hf <= 85) & (Sf >= 100) & (Vf >= 90)
+
+    # ---- interior mask: erode away the edge band ----
+    ys, xs = np.where(m)
+    y0, y1 = int(ys.min()), int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max())
+    w, h = max(1, x1 - x0), max(1, y1 - y0)
+    k = max(3, int(0.10 * min(w, h)))
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    inner = cv2.erode((m * 255).astype(np.uint8), kern) > 0
+    if inner.sum() < max(400, 0.25 * m.sum()):   # tiny onion: keep centre
+        inner = m
+
+    H, S, V = Hf[inner], Sf[inner], Vf[inner]
+    green = float(vivid[m].mean())
     brown = float(np.mean((H >= 8) & (H <= 25) & (S >= 60) & (V <= 160)))
-    dark = float(np.mean(G < 70))
-    return {"green": green, "brown": brown, "dark": dark}
+    dark = float(np.mean(V < 70))
+    # colour personality of this onion (variety / condition cues):
+    sat_med = float(np.median(S))            # vivid skin vs dull/moldy
+    v_med = float(np.median(V))
+    # grayish-black = MOLD (desaturated darkness), not a healthy skin
+    desat_dark = float(np.mean((S < 60) & (V < 90)))
+    # saturated-dark = natural DARK-RED skin (healthy red onion!)
+    sat_dark = float(np.mean((S >= 90) & (V < 110)))
+
+    # ---- relative-to-LOCAL-baseline defect features (v3 core) ----
+    # A round onion shades smoothly (bright centre, darker rim). If we
+    # compared every pixel to one global median, that shading would
+    # look like a defect. Instead we blur the brightness channel into
+    # a SMOOTH field and compare each pixel to its own neighbourhood:
+    # smooth shading is absorbed by the blur; a bruise or rot patch is
+    # a LOCAL anomaly and stands out. This works the same on bright
+    # yellow and dark red onions - variety-invariant.
+    Vwhole = hsv[:, :, 2].astype(np.float32)
+    Vfill = np.where(m, Vwhole, np.median(Vwhole[m])).astype(np.float32)
+    ks = max(5, (int(0.22 * min(w, h)) // 2) * 2 + 1)   # odd kernel
+    vbase = cv2.GaussianBlur(Vfill, (ks, ks), 0)
+    dev_dark = (Vwhole < vbase - 35.0) & inner      # locally darker
+    dev_brown = dev_dark & (Hf >= 8) & (Hf <= 25) & (Sf >= 50)
+    deep = (Vwhole < vbase - 70.0) & inner          # rot-dark locally
+    dark_rel = float(dev_dark.sum() / max(1, inner.sum()))
+    brown_rel = float(dev_brown.sum() / max(1, inner.sum()))
+    deep_rel = float(deep.sum() / max(1, inner.sum()))
+
+    # largest connected dark patch (a bruise is ONE blob, speckle is not)
+    patch_frac = 0.0
+    if dev_dark.any():
+        dmap = (dev_dark * 255).astype(np.uint8)
+        dmap = cv2.morphologyEx(dmap, cv2.MORPH_CLOSE,
+                                np.ones((3, 3), np.uint8))
+        _n, _lab, cc_stats, _cen = cv2.connectedComponentsWithStats(dmap)
+        if len(cc_stats):
+            areas = cc_stats[1:, cv2.CC_STAT_AREA]      # ignore bg
+            if len(areas):
+                patch_frac = float(areas.max() / max(1, inner.sum()))
+
+    v_std = float(Vf[inner].astype(np.float32).std())
+    # micro-texture on a SIZE-NORMALISED crop (so a small close-up photo
+    # and a wide pile photo measure the same way): dry papery skin is
+    # busy, a soggy rot patch is smooth and flat
+    crop = gray[y0:y1 + 1, x0:x1 + 1]
+    if crop.size:
+        crop = cv2.resize(crop, (96, 96), interpolation=cv2.INTER_AREA)
+        tex_var = float(crop.var())
+    else:
+        tex_var = 0.0
+
+    # top-centre window of the onion's own bounding box: a sprout pokes
+    # out of the TOP MIDDLE; background green hugs sides and bottom
+    win = np.zeros_like(m)
+    win[y0:y0 + int(h * 0.35),
+        x0 + int(w * 0.25):x0 + int(w * 0.75)] = True
+    area_top = int((m & win).sum())
+    green_top = (float((vivid & m & win).sum()) / area_top
+                 if area_top else 0.0)
+
+    return {
+        "green": green, "green_top": green_top,
+        "brown": brown, "dark": dark,
+        "dark_rel": dark_rel, "brown_rel": brown_rel, "deep_rel": deep_rel,
+        "patch_frac": patch_frac, "v_std": v_std, "tex_var": tex_var,
+        "sat_med": sat_med, "v_med": v_med,
+        "desat_dark": desat_dark, "sat_dark": sat_dark,
+    }
+
+
+# feature order shared by the trainer and the exported model.
+# "vis" = how much of the onion is actually visible (1.0 = full disc);
+# it is filled in by analyze() before classify() is called.
+FEATURE_ORDER_V3 = ["green", "green_top", "brown", "dark",
+                    "dark_rel", "brown_rel", "deep_rel",
+                    "patch_frac", "v_std", "tex_var",
+                    "sat_med", "v_med", "desat_dark", "sat_dark", "vis"]
 
 
 # ------------------------------------------------------------------
-# STEP 10 - classify one onion (rule based)
+# STEP 10a - the TRAINED random forest (advanced ML layer)
+#   models/onion_clf.json holds 250 decision trees trained by
+#   train_classifier.py (real photos + healthy piles + synthetic
+#   onions). The file is plain numbers: this loader needs ONLY
+#   numpy, so the trained model also runs on the Vercel deployment
+#   (scikit-learn is only needed to re-train, not to predict).
+#   If the file is missing, classify() falls back to the rules below.
+# ------------------------------------------------------------------
+_CLF_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "models", "onion_clf.json")
+_CLF = None
+_CLF_TRIED = False
+
+
+def load_clf(force=False):
+    """load the trained model once (returns the model dict or None)."""
+    global _CLF, _CLF_TRIED
+    if _CLF_TRIED and not force:
+        return _CLF
+    _CLF_TRIED = True
+    _CLF = None
+    try:
+        with open(_CLF_MODEL_PATH) as fh:
+            m = json.load(fh)
+        if m.get("format") == 1 and m.get("features") == FEATURE_ORDER_V3:
+            _CLF = m
+    except Exception:
+        pass
+    return _CLF
+
+
+def _clf_walk(node, x):
+    """walk one exported decision tree (leaf = class counts)."""
+    while node[0] != -1:
+        node = node[2] if x[node[0]] <= node[1] else node[3]
+    return node[1]
+
+
+def clf_predict(feats):
+    """majority vote of the forest -> 'GOOD' / 'DAMAGED' / 'ROTTEN',
+    or None if the trained model is not available."""
+    m = _CLF if _CLF is not None or _CLF_TRIED else load_clf()
+    if not m:
+        return None
+    # missing "vis" would unfairly mean "fully hidden" - default 1.0
+    x = [float(feats.get(k, 1.0 if k == "vis" else 0.0))
+         for k in m["features"]]
+    votes = np.zeros(len(m["classes"]))
+    for tree in m["trees"]:
+        counts = np.asarray(_clf_walk(tree, x), dtype=float)
+        votes += counts / max(1.0, counts.sum())
+    return str(m["classes"][int(np.argmax(votes))])
+
+
+def clf_info():
+    """honest description of the active classifier (for the report)."""
+    m = _CLF if _CLF is not None or _CLF_TRIED else load_clf()
+    if not m:
+        return {"name": "rules-v3",
+                "note": "trained model file missing - using hand rules"}
+    ev = m.get("meta", {}).get("eval", {})
+    return {"name": m.get("meta", {}).get("model", "random-forest"),
+            "eval_lopo_real": ev.get("lopo_real_photos"),
+            "sprout_rule": ev.get("sprout_rule"),
+            "note": ev.get("note", "")}
+
+
+# ------------------------------------------------------------------
+# STEP 10 - classify one onion (trained ML + measured rules)
 # ------------------------------------------------------------------
 def classify(feats, d_mm, full_visible=True):
-    """Order matters: check worst problems first.
+    """HYBRID classifier (v3):
+
+    1. SPROUTED  - measured rule: a vivid green shoot at the onion's
+       top-centre (green_top >= 0.10). Interpretable and robust - a
+       sprout is a clear visual signal, no model needed.
+    2. GOOD / DAMAGED / ROTTEN - the TRAINED random forest
+       (models/onion_clf.json, trained by train_classifier.py on real
+       photos + healthy red piles + synthetic onions). It looks at 14
+       variety-invariant features at once - local dark patches,
+       saturation, texture - which is why dark RED onions are no longer
+       falsely graded rotten and light bruises are now catchable.
+    3. If the model file is missing -> conservative rules-v3 fallback
+       (catches clear rot, never punishes dark-red skin).
+
     Size rules (UNDERSIZED) only apply to FULLY VISIBLE onions - a
-    partly hidden onion always measures too small, that would be unfair."""
-    if feats["green"] >= GREEN_SPROUTED:
+    partly hidden onion always measures too small, that would be unfair.
+    """
+    # 1) sprout rule (measured on real photos)
+    if feats.get("green_top", 0.0) >= GREEN_SPROUTED:
         return "SPROUTED"
-    if feats["dark"] >= DARK_ROTTEN or feats["brown"] >= BROWN_ROTTEN:
-        return "ROTTEN"
-    if feats["dark"] >= DARK_DAMAGED or feats["brown"] >= BROWN_DAMAGED:
-        return "DAMAGED"
-    if full_visible and d_mm < UNDERSIZED_MM:
+    # 2) trained model
+    lab = clf_predict(feats)
+    # 3) fallback rules (model file missing)
+    if lab is None:
+        if (feats.get("desat_dark", 0.0) >= 0.05          # gray mold
+                or feats.get("deep_rel", 0.0) >= 0.08     # rot-dark patch
+                or (feats.get("brown", 0.0) >= 0.25 and
+                    feats.get("dark", 0.0) >= 0.15)       # dark+brown
+                or (feats.get("brown", 0.0) >= 0.55 and
+                    feats.get("tex_var", 0.0) < 1500)):   # matte mold skin
+            return "ROTTEN"
+        if (feats.get("dark_rel", 0.0) >= 0.12 and
+                feats.get("brown_rel", 0.0) >= 0.05):     # local bruise
+            return "DAMAGED"
+        lab = "GOOD"
+    if lab == "GOOD" and full_visible and d_mm < UNDERSIZED_MM:
         return "UNDERSIZED"
-    return "GOOD"
+    return lab
 
 
 # ------------------------------------------------------------------
@@ -1360,7 +1694,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     gray, mask = make_object_mask(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    if not in_memory:
+    if out_dir and not in_memory:
         cv2.imwrite(os.path.join(out_dir, f"debug_mask_{stem}.jpg"), mask)
 
     blobs = get_blobs(mask)
@@ -1410,26 +1744,80 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 mask, blobs = mask_lc, refined
     warnings, watershed_splits = [], 0
 
+    # --- scene suitability (honest diagnostics, not fake accuracy) ---
+    # Real-world photos (heaps on jute sacks, textured surfaces, busy
+    # backgrounds) break single-threshold segmentation. Instead of
+    # silently returning nonsense numbers, TELL the user the SCENE is
+    # the problem and what to change.
+    coverage = 100.0 * float(mask.mean()) / 255.0
+    if blobs and coverage > 55.0:
+        warnings.append(
+            f"objects cover {coverage:.0f}% of the photo and merge into "
+            "big blobs - this looks like a HEAP or a busy/textured "
+            "background. For reliable counting, spread the onions in "
+            "ONE layer on a plain, contrasting surface.")
+
+    # heap-detection flags (set inside the blobs block below; defined
+    # here so the code AFTER the block can always read them)
+    heap_mode = heap_estimated = False
+
     if blobs:
         areas = [cv2.contourArea(c) for c in blobs]
         median_area = float(np.median(areas))
 
+        # --- HEAP CASE: one merged blob covers a big part of the photo
+        # (a pile/heap of many onions). The median-area trick degenerates
+        # here - the median of ONE blob is the blob itself, so
+        # expected=1 and no split is ever attempted ("1 onion" for a
+        # heap of 20). We estimate the onion radius from the blob's own
+        # geometry instead and let watershed/Hough find the individuals.
+        heap_mode = (len(blobs) == 1
+                     and areas[0] > 0.25 * img_area)
+
         # --- split touching onions ---
         final, final_vis = [], []   # final_vis: None = compute extent later
+        # final_trusted: True = piece came from a VALIDATED split (it
+ # passed all gates), False = raw unsplit blob / secondary find.
+ # The fragment filter only drops UNTRUSTED tiny pieces.
+        final_trusted = []
         for c in blobs:
             area_c = cv2.contourArea(c)
-            big = area_c > MERGED_FACTOR * median_area
+            big = area_c > MERGED_FACTOR * median_area or heap_mode
             not_round = circularity(c) < CIRC_SPLIT_MAX
             expected = max(1, int(math.ceil(area_c / median_area)))
+            r_hint = None
+            if heap_mode:
+                bx, by, bw, bh = cv2.boundingRect(c)
+                # ~6 onions fit across the blob's shorter side -> radius
+                r_hint = max(15.0, min(bw, bh) / 6.0)
+                expected = max(2, int(math.ceil(
+                    area_c / (math.pi * r_hint * r_hint))))
             # "underfull": the blob is too small for `expected` full
             # onions -> part of them must be HIDDEN (a pile!)
             underfull = area_c < 0.85 * expected * median_area
-            if big and (not_round or underfull):
+            # DEPTH CAP: how many onions deep is this blob? One round
+            # onion ~ 1.0, N touching onions ~ N. When the depth says
+            # "about 3 onions", a splitter returning 9 "onions" is
+            # reading skin texture, not onions -> cap the piece count.
+            # (Only when the estimate is trustworthy: ratio >= 1.6.
+            # Below that, touching onions look shallow - do not cap.)
+            dt_ratio = 0.0            # default: unknown / not computed
+            if not heap_mode:
+                _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
+                if dt_ratio >= 1.6:
+                    expected = min(expected, max(2, int(round(dt_ratio))))
+            if big and (not_round or underfull or heap_mode):
                 pieces, pieces_vis = [], []
                 if expected >= 2:
                     pieces = watershed_split(bgr, c, expected=expected)
                     if (len(pieces) == expected
-                            and not _pieces_overlap(pieces)):
+                            and not _pieces_overlap(pieces)
+                            and _split_pieces_consistent(pieces)
+                            # watershed pieces TILE the blob, so a real
+                            # split covers ~99% of it; a fake carve of
+                            # one big onion covers ~60% -> demand 80%
+                            and _split_covers_blob(pieces, c,
+                                                   min_frac=0.80)):
                         watershed_splits += expected - 1
                         pieces_vis = [None] * len(pieces)   # keep lists aligned!
                     else:
@@ -1439,30 +1827,159 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                         pieces, pieces_vis = [], []
                 if len(pieces) < 2:
                     # rescue: Hough circle search for hidden onions
-                    hpieces, hvis = hough_split(bgr, mask, c, median_area)
+                    # (r_hint only in heap mode - see hough_split docs)
+                    hpieces, hvis = hough_split(
+                        bgr, mask, c, median_area, r_hint=r_hint,
+                        max_circles=(expected if not heap_mode else None))
                     if (len(hpieces) >= 2
-                            and not _pieces_overlap(hpieces)):
+                            and not _pieces_overlap(hpieces)
+                            and _split_pieces_consistent(hpieces)
+                            and _split_covers_blob(
+                                hpieces, c,
+                                # 0.45: real 3-way splits cover 0.47-0.63
+                                # (a circle's other half can stick out
+                                # of an occluded blob); fake skin-texture
+                                # splits cover ~0.31 - still rejected
+                                min_frac=0.35 if heap_mode else 0.45)):
                         pieces = hpieces
                         pieces_vis = hvis
                         watershed_splits += len(pieces) - 1
+                        if heap_mode:
+                            heap_estimated = True
                 if len(pieces) >= 2:
                     final += pieces
                     final_vis += pieces_vis
+                    final_trusted += [True] * len(pieces)
+                    if heap_mode:
+                        # heap split by EITHER watershed or Hough ->
+                        # the count is still only an estimate
+                        heap_estimated = True
+                elif (coverage > 45.0 and area_c > 0.15 * img_area
+                      and dt_ratio >= 5.0):
+                    # --- LAST-RESORT HEAP ESTIMATE ---
+                    # Only for blobs that are DEEP (DT ratio >= 5:
+                    # clearly many onions packed together - real piles
+                    # measure ~7+). A single big occluded onion wobbles
+                    # around 3-4 with JPEG noise - splitting it created
+                    # phantom onions on close-up photos.
+                    # Guess the onion radius from the blob's own shape
+                    # (about 6 onions across its shorter side) and try
+                    # Hough once more, depth-capped.
+                    bx, by, bw, bh = cv2.boundingRect(c)
+                    r_guess = max(15.0, min(bw, bh) / 6.0)
+                    cap = max(2, int(round(dt_ratio)))
+                    hpieces, hvis = hough_split(
+                        bgr, mask, c, median_area, r_hint=r_guess,
+                        max_circles=cap)
+                    if len(hpieces) >= 2 and not _pieces_overlap(hpieces):
+                        # heap estimate: TRIM ragged edges instead of
+                        # rejecting - drop fragments (< 0.35x the median
+                        # piece of this split), keep the consistent core
+                        pas = [cv2.contourArea(p) for p in hpieces]
+                        pmed = float(np.median(pas))
+                        core = [(p, v) for p, v, a in
+                                zip(hpieces, hvis, pas)
+                                if a >= 0.35 * pmed]
+                        if len(core) >= 2 and _split_covers_blob(
+                                [p for p, _ in core], c, min_frac=0.35):
+                            final += [p for p, _ in core]
+                            final_vis += [v for _, v in core]
+                            final_trusted += [True] * len(core)
+                            watershed_splits += len(core) - 1
+                            heap_estimated = True
+                        else:
+                            final.append(c)
+                            final_vis.append(None)
+                            final_trusted.append(False)
+                    else:
+                        final.append(c)
+                        final_vis.append(None)
+                        final_trusted.append(False)
                 else:
                     final.append(c)
                     final_vis.append(None)
+                    final_trusted.append(False)
             else:
                 final.append(c)
                 final_vis.append(None)
+                final_trusted.append(False)
         # --- "detect ALL onions": secondary passes for missed ones ---
         extras = detect_all_onions(bgr, gray, final, median_area)
         if extras:
             final += extras
             final_vis += [None] * len(extras)
+            final_trusted += [False] * len(extras)
             warnings.append(
                 f"{len(extras)} onion(s) found by the SECONDARY detector "
                 "(low contrast / uneven light) - check their boxes on the "
                 "annotated photo")
+
+        # --- REFINEMENT PASS: split pieces that are STILL merged ---
+        # Why: when a pile merges into big blobs, the median BLOB area is
+        # a useless ruler (it is the pile, not an onion), so round 1 can
+        # leave pieces that are still 2+ onions glued together. The
+        # PIECES we have now are a much better ruler: a normal piece is
+        # roughly onion-sized, so any piece ~2x bigger than the MEDIAN
+        # piece is probably still merged -> re-split it with the piece
+        # median as the size hint (works for 1 merged blob, 2, or many).
+        for _round in range(2):          # at most 2 refinement rounds
+            if len(final) < 3:
+                break                    # too few pieces for a median
+            areas_f = [cv2.contourArea(c) for c in final]
+            ref_area = float(np.median(areas_f))
+            ref_r = math.sqrt(ref_area / math.pi)
+            # pieces still much bigger than a normal onion in THIS photo
+            big_ids = [i for i, a in enumerate(areas_f)
+                       if a > 2.2 * ref_area]
+            if not big_ids:
+                break                    # nothing left to refine
+            refined_any = False
+            for i in sorted(big_ids, reverse=True):   # back to front:
+                c = final[i]                           # indexes stay valid
+                area_c = areas_f[i]
+                exp = max(2, int(round(area_c / ref_area)))
+                # refinement is for DEEP merged pile pieces only
+                # (DT ratio >= 5; real piles measure ~7+). A single big
+                # occluded onion wobbles around 3-4 with JPEG noise -
+                # re-splitting it created phantom pieces on close-ups.
+                _d, dt_ratio = _dt_disc_ratio(bgr.shape, c)
+                if dt_ratio < 5.0:
+                    continue               # not clearly a merged pile piece
+                exp = min(exp, max(2, int(round(dt_ratio))))
+                pieces, pieces_vis = [], []
+                ws_pieces = watershed_split(bgr, c, expected=exp)
+                if (len(ws_pieces) == exp
+                        and not _pieces_overlap(ws_pieces)
+                        and _split_pieces_consistent(ws_pieces)
+                        and _split_covers_blob(ws_pieces, c,
+                                               min_frac=0.80)):
+                    pieces = ws_pieces
+                    pieces_vis = [None] * len(pieces)
+                if len(pieces) < 2:
+                    hpieces, hvis = hough_split(bgr, mask, c, ref_area,
+                                                r_hint=ref_r,
+                                                max_circles=exp)
+                    if (len(hpieces) >= 2
+                            and not _pieces_overlap(hpieces)
+                            and _split_pieces_consistent(hpieces)
+                            and _split_covers_blob(hpieces, c)):
+                        pieces, pieces_vis = hpieces, hvis
+                if len(pieces) >= 2:
+                    # replace the merged piece with its parts (the two
+                    # lists must stay index-aligned!)
+                    final = final[:i] + pieces + final[i + 1:]
+                    final_vis = (final_vis[:i] + pieces_vis
+                                 + final_vis[i + 1:])
+                    final_trusted = (final_trusted[:i]
+                                     + [True] * len(pieces)
+                                     + final_trusted[i + 1:])
+                    watershed_splits += len(pieces) - 1
+                    refined_any = True
+                    # a split pile scene => the count is an estimate
+                    if coverage > 45.0:
+                        heap_estimated = True
+            if not refined_any:
+                break
 
         # any region still without a visibility value (Hough leftovers,
         # secondary-detector finds): use the convex-hull extent
@@ -1487,6 +2004,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 if _c is coin["contour"]:
                     del final[_idx]
                     del final_vis[_idx]
+                    del final_trusted[_idx]
                     break
         else:
             # ---- NO COIN: honest estimate modes (no exact mm possible) ----
@@ -1523,6 +2041,27 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                     "No coin/reference found - sizes are ESTIMATES, not "
                     "measurements. Put a coin in the photo for exact mm.")
 
+        # --- "ONLY ONIONS" filter: drop fragments, keep real onions ---
+        # User policy: focus on the BIG onion pieces and count only
+        # real onions. A piece 10x smaller than the biggest onion in
+        # THIS photo is junk (sack bit, shadow, vignette corner, sliver
+        # from a bad cut) - not a whole onion of the same batch.
+        # Runs AFTER the coin check so a small coin is not affected.
+        if final:
+            biggest = max(cv2.contourArea(c) for c in final)
+            keep = [(c, v) for c, v, t in
+                    zip(final, final_vis, final_trusted)
+                    if t or cv2.contourArea(c) >= MIN_REL_SIZE * biggest]
+            dropped = len(final) - len(keep)
+            if dropped:
+                final = [c for c, _ in keep]
+                final_vis = [v for _, v in keep]
+                final_trusted = [t for *_, t in keep]
+                warnings.append(
+                    f"{dropped} tiny fragment(s) ignored - they are far "
+                    "smaller than the onions in this photo (sack bits, "
+                    "shadows or slivers), not onions.")
+
         # --- features + classify + grade, onion by onion ---
         # pile-layer cue for every final region (before building dicts)
         vis_list = final_vis
@@ -1537,6 +2076,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             d_mm = (2.0 * float(r)) / px_per_mm
             vis = 1.0 if vis is None else float(vis)
             layer = layer_of(vis)
+            feats["vis"] = vis          # the ML model sees occlusion too
             full_visible = (layer == "L1")
             label = classify(feats, d_mm, full_visible=full_visible)
             onions.append({
@@ -1565,6 +2105,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     # --- counts and percentages ---
     n = len(onions)
+    if heap_estimated and n > 1:
+        warnings.append(
+            f"this looks like a HEAP/pile of onions - the {n} count is an "
+            "ESTIMATE (onions hide behind each other). For an exact count, "
+            "spread them in ONE layer, or fine-tune YOLO on real photos "
+            "(prelabel_real.py -> train_yolo.py).")
     grades = [o["grade"] for o in onions]
     gc = {"A": grades.count("A"), "URS": grades.count("URS"),
           "REJECT": grades.count("REJECT"), "CHECK": grades.count("CHECK")}
@@ -1585,6 +2131,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     # --- quantity estimate + quality flags + human summary ---
     qflags = quality_checks(gray, hsv)
+    if watershed_splits >= 8:
+        warnings.append(
+            f"heavy splitting ({watershed_splits} cuts) - skin texture, "
+            "mold spots or background detail are being separated as "
+            "extra 'onions'. If this photo really has only a few onions, "
+            "the count is UNRELIABLE - try a plainer background.")
     if n:
         Hf, Wf = bgr.shape[:2]
         edge_ids = [o["id"] for o in onions
@@ -1635,11 +2187,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
             "thresholds": {"green_sprouted": GREEN_SPROUTED,
                            "dark_rotten": DARK_ROTTEN, "brown_rotten": BROWN_ROTTEN,
                            "dark_damaged": DARK_DAMAGED, "brown_damaged": BROWN_DAMAGED},
+            "classifier": clf_info(),
         },
     }
 
     # --- write the 4 report files (skipped in live/in-memory mode) ---
-    if not in_memory:
+    if out_dir and not in_memory:
         f_ann = os.path.join(out_dir, f"{stem}_annotated.jpg")
         f_jsn = os.path.join(out_dir, f"{stem}_report.json")
         f_txt = os.path.join(out_dir, f"{stem}_report.txt")
@@ -1671,12 +2224,39 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     return rep
 
 
+LIVE_MAX_WIDTH    = 480    # camera frames are normalized to this width
+# WHY: the classic-CV pipeline is scale-sensitive (Hough circle votes,
+# blur kernels and speck floors are in pixels). The SAME scene can
+# count 4 at 480px wide but 6-14 at 960-1280px. Fixing every internal
+# constant is a big rewrite; instead every LIVE camera frame is
+# resized to ONE working width, so photo mode and camera mode behave
+# the same for the same scene. Photo uploads keep their own path.
+
+
+def fit_live_frame(bgr):
+    """Normalize a camera frame to the LIVE working width.
+
+    Frames WIDER than LIVE_MAX_WIDTH are scaled down (aspect kept).
+    Smaller frames are returned unchanged. Idempotent: an already-
+    normalized frame passes through untouched.
+    """
+    h, w = bgr.shape[:2]
+    if w > LIVE_MAX_WIDTH:
+        bgr = cv2.resize(bgr, (LIVE_MAX_WIDTH,
+                               int(h * LIVE_MAX_WIDTH / w)),
+                         interpolation=cv2.INTER_AREA)
+    return bgr
+
+
 def analyze_frame(bgr, coin_mm=27.0, batch_id="LIVE", distance_mm=None,
                   assume_mm=None, coin_assumed=True):
     """In-memory analysis of ONE live video frame (no files written).
     Used by the web app's live mode and camera.py --auto.
     Note: live frames carry no EXIF, so the distance mode falls back to
-    the assumed-size mode automatically (honest, and said so)."""
+    the assumed-size mode automatically (honest, and said so).
+    The frame is first normalized to LIVE_MAX_WIDTH so the camera
+    behaves the same at every camera resolution."""
+    bgr = fit_live_frame(bgr)
     return analyze(bgr, coin_mm=coin_mm, batch_id=batch_id, out_dir=None,
                    distance_mm=distance_mm, assume_mm=assume_mm,
                    coin_assumed=coin_assumed)

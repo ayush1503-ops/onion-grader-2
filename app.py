@@ -35,7 +35,7 @@ from werkzeug.utils import secure_filename
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, make_response
 
 import grader
 import yolo_mode
@@ -204,10 +204,15 @@ def file_urls(rep):
 # ------------------------------------------------------------------
 @app.route("/")
 def home():
-    """The one and only page (form + JavaScript that renders results)."""
+    """The one and only page (form + JavaScript that renders results).
+    no-cache: the HTML is small and edits are frequent - browsers must
+    always revalidate so users never see a stale design after a deploy."""
     with open(os.path.join(BASE_DIR, "app_page.html"), "r",
               encoding="utf-8") as fh:
-        return fh.read()
+        page = fh.read()
+    resp = make_response(page)
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -243,6 +248,10 @@ def api_live():
     bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if bgr is None:
         return jsonify({"ok": False, "error": "Frame was not a valid image."}), 400
+    # normalize to the LIVE working width FIRST, so the overlay boxes
+    # (drawn in the analyzed frame's coordinates) line up exactly with
+    # the canvas size we report below
+    bgr = grader.fit_live_frame(bgr)
 
     coin_mm, dist_mm, assu_mm, err = resolve_coin(
         request.form.get("coin_preset", "auto"),
@@ -325,6 +334,22 @@ def uploads(name):
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "app": "onion-quality-grader"})
+
+
+@app.errorhandler(413)
+def upload_too_large(e):
+    """Photo bigger than MAX_CONTENT_LENGTH -> friendly JSON, not an HTML
+    error page (the page's JavaScript only understands JSON).
+
+    Why the limit: Vercel's serverless functions hard-reject request
+    bodies over 4.5 MB, so SERVERLESS mode caps uploads at 4 MB. The
+    web page shrinks big phone photos in the browser before sending
+    (see shrinkPhoto in app_page.html), so real users never see this."""
+    limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    return jsonify({"ok": False,
+                    "error": f"Photo too large (max {limit_mb} MB on this "
+                             "host). Use a smaller/compressed photo, or the "
+                             "LIVE CAMERA mode."}), 413
 
 
 # ------------------------------------------------------------------
