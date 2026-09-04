@@ -1,0 +1,62 @@
+{
+  "summary": {
+    "total": 5,
+    "grade_a": 40.0,
+    "urs": 0.0,
+    "reject": 60.0,
+    "counts": {
+      "GradeA": 2,
+      "URS": 0,
+      "Reject": 3
+    },
+    "scale": "scale: reference = 27 mm"
+  },
+  "onions": [
+    {
+      "d_mm": 51.6,
+      "label": "DAMAGED",
+      "grade": "REJECT",
+      "circ": 0.87,
+      "brown": 0.293,
+      "dark": 0.04,
+      "green": 0.0
+    },
+    {
+      "d_mm": 51.9,
+      "label": "SPROUTED",
+      "grade": "REJECT",
+      "circ": 0.54,
+      "brown": 0.049,
+      "dark": 0.009,
+      "green": 0.042
+    },
+    {
+      "d_mm": 55.1,
+      "label": "ROTTEN",
+      "grade": "REJECT",
+      "circ": 0.86,
+      "brown": 0.832,
+      "dark": 0.438,
+      "green": 0.0
+    },
+    {
+      "d_mm": 53.1,
+      "label": "GOOD",
+      "grade": "Grade A",
+      "circ": 0.8,
+      "brown": 0.063,
+      "dark": 0.017,
+      "green": 0.0
+    },
+    {
+      "d_mm": 55.7,
+      "label": "GOOD",
+      "grade": "Grade A",
+      "circ": 0.71,
+      "brown": 0.065,
+      "dark": 0.01,
+      "green": 0.0
+    }
+  ],
+  "ref_diameter_mm": 27.0
+}

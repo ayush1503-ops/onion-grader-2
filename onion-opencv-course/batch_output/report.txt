@@ -1,0 +1,12 @@
+ONION QUALITY REPORT
+====================
+scale: coin = 27 mm
+Total onions: 4
+Grade A: 0.0%   URS: 50.0%   Reject: 50.0%
+
+1. GOOD        91.2 mm   UNGRADED
+2. ROTTEN      73.9 mm   REJECT
+3. GOOD        65.2 mm   Grade URS
+4. GOOD        69.2 mm   Grade URS
+
+NOTE: visible surface analysis only - cannot see inside the onion.

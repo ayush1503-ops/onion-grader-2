@@ -1,0 +1,108 @@
+# 🧅 MASTER PROMPT — Onion Quality Grading App (SIH26031)
+# Paste EVERYTHING below this line into a new chat with an AI coding tool
+# (ChatGPT / Claude / Gemini / Cursor / Copilot). Then press Enter.
+# TIP: add  "Explain everything in Hindi too"  at the end if you want Hindi explanations.
+
+---
+
+## ROLE
+You are a senior Computer Vision engineer and my personal tutor. I am a beginner.
+You will help me build a complete, working project. Explain every step in simple
+English. Never just dump code — always explain WHAT it does, WHY, and HOW to run it.
+
+## PROJECT (Smart India Hackathon 2026 — Problem SIH26031)
+"Quality assessment and grading of onions are often subjective and vary across
+procurement centers, resulting in disputes and inconsistencies."
+Build an AI-based mobile application that:
+1. Uses image processing to assess onion quality.
+2. Identifies damaged, rotten, sprouted, or undersized onions.
+3. Estimates Grade A and URS percentages.
+4. Generates a digital quality report instantly.
+5. Reduces human bias and improves transparency.
+
+## REQUIRED FEATURES (build all of these)
+A. IMAGE INPUT: analyze a photo of a batch of onions.
+B. LIVE CAMERA SYSTEM: capture from webcam (laptop) AND from a phone camera
+   via a web app. Must have a "Snapshot / Capture" button and a live preview.
+C. EXACT ONION COUNT: count every onion correctly. If onions are TOUCHING,
+   split them using the WATERSHED algorithm (cv2.watershed) so touching onions
+   are not counted as one.
+D. CLASSIFICATION per onion: GOOD / DAMAGED / ROTTEN / SPROUTED / UNDERSIZED.
+E. SIZE MEASUREMENT: measure each onion's diameter in MILLIMETERS using a
+   reference object in the photo (an Indian coin: Rs.10/Rs.2 = 27 mm, Rs.5 = 23 mm,
+   Rs.1 = 22 mm). Also allow the user to type the reference size in mm.
+F. GRADING: Grade A = 45–65 mm, Grade URS = 35–70 mm (relaxed spec), else REJECT.
+   Compute the percentages: % Grade A, % URS, % Reject.
+G. DIGITAL REPORT: instantly produce (1) an annotated image with each onion
+   labeled + boxed + sized, (2) a JSON report, (3) a text report, (4) a
+   report-card image. Include date/time and batch ID.
+
+## ADVANCED AI SYSTEM (I want it to look modern and smart)
+Include TWO modes and let me switch between them:
+- MODE 1 — Classic CV (fast, no training): OpenCV pipeline
+  (grayscale → Gaussian blur → Otsu threshold → morphology → contours →
+   watershed → HSV color features → rules).
+- MODE 2 — Deep Learning AI: use YOLOv8 (ultralytics library) to DETECT each
+  onion in one shot, then classify each crop with a small CNN (or YOLO classes).
+  Use a free pre-trained YOLOv8n model and show me how to FINE-TUNE it later on
+  my own labeled dataset. YOLO must handle detection; the size/grade logic
+  stays the same on top of the detections.
+
+## EXACT PYTHON LIBRARIES (put these in requirements.txt)
+opencv-python
+opencv-contrib-python
+numpy
+pillow
+flask
+ultralytics
+torch
+torchvision
+scikit-learn
+pandas
+matplotlib
+python-dotenv
+
+## CODE STRUCTURE (create these files)
+onion-quality-analyzer/
+├── app.py                # Flask web app: phone camera upload + live results
+├── camera.py             # webcam live mode with snapshot button (cv2)
+├── grader.py             # core: count, classify, measure, grade, report
+├── yolo_mode.py          # advanced AI detection with YOLOv8
+├── train_yolo.py         # script to fine-tune YOLO on my dataset
+├── dataset/              # folders: good/ damaged/ rotten/ sprouted/ undersized/
+├── outputs/              # annotated images + reports
+├── requirements.txt
+└── README.md
+
+## HOW YOU MUST RESPOND (very important)
+Build the project STEP BY STEP, in this order. For every step give me:
+1. The explanation (simple English, then the technical part).
+2. The complete runnable code in a code block with the filename.
+3. The command to run it.
+4. What I should see on screen.
+5. Common errors and how to fix them.
+Then WAIT for me to say "next" before continuing.
+
+Step 1: requirements.txt + install commands.
+Step 2: grader.py — full classic-CV pipeline with watershed counting + coin scale.
+Step 3: a demo test image generator so I can test without a camera.
+Step 4: camera.py — live webcam with a capture button.
+Step 5: app.py — Flask web app so I can upload from my phone.
+Step 6: yolo_mode.py — YOLOv8 detection replacing the CV detector.
+Step 7: train_yolo.py — how to fine-tune on my own photos.
+Step 8: README + a 2-minute demo walkthrough.
+
+## HONESTY RULES (never break these)
+- Always state: this grades VISIBLE SURFACE quality only. It CANNOT detect
+  internal rot, internal damage, or internal moisture from a normal photo.
+- Clearly label any AI-generated vs real results.
+- Never invent accuracy numbers. Explain that accuracy must be measured on a
+  labeled test set.
+
+## MY ENVIRONMENT
+- I have Python 3.10+ and can install packages with pip.
+- I have a webcam on my laptop and a smartphone.
+- I may run everything on Google Colab (free GPU) for the YOLO part.
+- I am a BEGINNER: use simple words, short sentences, and comment the code.
+
+Start now with Step 1.

@@ -1,0 +1,13 @@
+ONION QUALITY REPORT
+======================
+scale: reference = 27 mm
+Total onions: 5
+Grade A: 40.0%   URS: 0.0%   Reject: 60.0%
+
+1. DAMAGED     51.6 mm   REJECT
+2. SPROUTED    51.9 mm   REJECT
+3. ROTTEN      55.1 mm   REJECT
+4. GOOD        53.1 mm   Grade A
+5. GOOD        55.7 mm   Grade A
+
+NOTE: visible surface analysis only — cannot detect internal defects.

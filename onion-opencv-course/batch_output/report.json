@@ -1,0 +1,53 @@
+{
+  "summary": {
+    "total": 4,
+    "grade_a": 0.0,
+    "urs": 50.0,
+    "reject": 50.0,
+    "counts": {
+      "GradeA": 0,
+      "URS": 2,
+      "Reject": 2
+    },
+    "scale": "scale: coin = 27 mm"
+  },
+  "onions": [
+    {
+      "d_mm": 91.2,
+      "label": "GOOD",
+      "grade": "UNGRADED",
+      "circ": 0.65,
+      "brown": 0.0,
+      "dark": 0.0,
+      "green": 0.0
+    },
+    {
+      "d_mm": 73.9,
+      "label": "ROTTEN",
+      "grade": "REJECT",
+      "circ": 0.89,
+      "brown": 0.984,
+      "dark": 0.732,
+      "green": 0.0
+    },
+    {
+      "d_mm": 65.2,
+      "label": "GOOD",
+      "grade": "Grade URS",
+      "circ": 0.89,
+      "brown": 0.0,
+      "dark": 0.0,
+      "green": 0.0
+    },
+    {
+      "d_mm": 69.2,
+      "label": "GOOD",
+      "grade": "Grade URS",
+      "circ": 0.89,
+      "brown": 0.0,
+      "dark": 0.0,
+      "green": 0.0
+    }
+  ],
+  "ref_diameter_mm": 27.0
+}
