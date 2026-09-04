@@ -64,7 +64,19 @@ solved automatically).
 ### Vercel (serverless)
 
 This repo ships `app.py` (Flask entrypoint) + `vercel.json` for Vercel.
-It installs with **plain pip from `requirements.txt`**.
+It now uses **uv with `pyproject.toml` + `uv.lock`** (Python 3.11) — the
+modern, reliable path. Vercel auto-detects those files and runs
+`uv sync --active --no-dev --link-mode hardlink --locked --no-editable`.
+
+⚠️ **Why Python 3.11 not 3.13.4?** `uv` only has the *latest* patch of
+each minor in its managed store (e.g. 3.13.15, 3.12.14, 3.11.16). Pinning
+an exact old patch like `3.13.4` in `.python-version` makes uv fail with:
+
+> `error: No interpreter found for Python 3.13.4 in managed installations`
+
+Fix: use `3.11` (or `3.12`) without a patch — uv then picks the latest
+patch and finds the system interpreter. This repo now pins `3.11` in
+`.python-version`, `vercel.json` runtime, and `render.yaml`.
 
 ⚠️ **Do NOT add `rewrites` to `vercel.json`** (e.g. the old
 `/(.*) → /app.py` catch-all). Vercel now routes internal rewrites in
@@ -74,13 +86,10 @@ for every request and 404 everything. Vercel's Flask framework build
 already sends ALL requests to `app.py` with their original paths —
 no rewrites are needed.
 
-⚠️ **Do NOT add `uv.lock` / `pyproject.toml` back.** Vercel's Python
-runtime auto-detects those files and force-runs its own
-`uv sync --active --no-dev --link-mode hardlink --frozen --no-editable`
-(which ignores our `installCommand` and fails in Vercel's build). They
-were deliberately removed so Vercel uses `pip install -r requirements.txt`.
-If you use `uv` locally, keep those two files git-ignored — never commit
-them. All runtime dependencies live in `requirements.txt`.
+If you use `pip` only, `requirements.txt` still works — Render and
+local `pip install -r requirements.txt` both work. `pyproject.toml`
+lists the same 5 pinned deps (Flask, opencv-headless, numpy, pillow,
+waitress) for uv.
 
 ### Render.com (free, easiest)
 1. Put the project on **GitHub** (create a repo, upload the folder —
