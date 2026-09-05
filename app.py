@@ -151,6 +151,10 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
     except Exception as exc:                       # friendly error page
         return None, f"Analysis failed: {exc}"
 
+    # Return error if no onions were detected
+    if rep.get("onion_count", 0) == 0:
+        return None, "No onion detected in the photo. Please ensure the photo shows whole onion bulbs on a plain, contrasting background. The onions must be clearly darker (or brighter) than the background."
+
     urls = file_urls(rep)
     if os.environ.get("VERCEL") == "1":          # embed the photo too
         import base64 as _b64
