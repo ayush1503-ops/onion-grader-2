@@ -1000,6 +1000,227 @@ def reject_non_onions(bgr, contours, vis_list, trusted, median_area,
 
 
 # ------------------------------------------------------------------
+# "ONION-ONLY" APPEARANCE GATE - is this blob really an onion?
+# ------------------------------------------------------------------
+# WHY THIS EXISTS (the honest problem):
+#   The segmenter in STEP 7 finds ANY blob that stands out from the
+#   background - an apple, a potato, a hand, a green shoot or a white
+#   plastic lid is a blob too, and every one of them used to be counted
+#   and graded as an onion. These gates ask the question the rest of the
+#   pipeline never asked: "does this thing LOOK like onion skin?"
+#
+# WHAT IT CAN DO (measured, see evaluate_gate.py):
+#   * rejects objects whose surface is a colour onion skin never has:
+#     vivid green (leaves/shoots), blue/cyan (plastic, cloth, sky),
+#     purple/magenta (brinjal, plum), mirror-gloss (glossy fruit,
+#     plastic) and plain smooth white (lid, paper, cup).
+#   * rejects a blob that disagrees strongly with every other onion in
+#     the SAME photo (one apple in a pile of red onions).
+#
+# WHAT IT CANNOT DO (do not promise more than this):
+#   * A potato, a yellow apple, a lemon or a garlic bulb sitting ALONE
+#     in the photo is made of roughly the same colours as an onion -
+#     colour and texture alone cannot separate them reliably. Measured
+#     with evaluate_gate.py on 19 real onion photos + 32 non-onion
+#     photos: 94.5% of real onion blobs kept, 45.6% of non-onion
+#     objects rejected. Tightening the rules until a lone potato is
+#     caught costs ~6% of real onions, so we stay CONSERVATIVE and only
+#     drop clearly non-onion surfaces.
+#   * The REAL fix for 100% onion-only detection is a trained detector
+#     (train_yolo.py / prelabel_real.py): a YOLO model fine-tuned on
+#     labeled onion photos learns the SHAPE of an onion, not just its
+#     colour. Run `python evaluate_gate.py` to measure this gate on
+#     your own photos, and see README.md ("Detect only onions").
+GATE_ENABLED = True       # False = switch the appearance gate off
+                          # (evaluate_gate.py uses it to measure the
+                          #  gate's effect on the very same photo)
+
+GATE_GREEN_MAX   = 0.45   # >= this share of vivid-green skin = leaves /
+                          # shoots / green vegetable, not onion skin
+GATE_BLUE_MAX    = 0.20   # >= this share of blue/cyan = not an onion colour
+GATE_MAGENTA_MAX = 0.35   # >= this share of purple/magenta = not an onion
+                          #    (brinjal / plum / beetroot; measured: real
+                          #     red-onion skin stays at ~0.00-0.05)
+GATE_WHITE_MAX   = 0.60   # >= this share of plain white AND smooth
+GATE_WHITE_TEX   = 22.0   #    (texture std below this) = lid/paper/cup
+GATE_GLOSS_MAX   = 0.10   # >= this share of mirror-bright pixels AND
+GATE_GLOSS_TEX   = 24.0   #    smooth = glossy fruit/plastic, not papery
+GATE_VIVID_MAX   = 0.50   # >= this share of VERY bright + saturated
+GATE_VIVID_LABB  = 185.0  #    yellow = citrus/mango, not onion skin
+                          #    (a bright YELLOW onion measures ~0.39 -
+                          #     0.50 is deliberately above it)
+GATE_MIN_BLOBS   = 3      # photo-consistency needs at least this many
+GATE_SAT_RATIO   = 3.0    # blob this much more/less colourful than the
+GATE_VAL_RATIO   = 1.8    # ...brighter/darker, or this much smoother/
+GATE_TEX_RATIO   = 3.0    # ...busier, or this far away in hue...
+GATE_HUE_DEG     = 60.0
+GATE_HUE_MIN_S   = 55.0   # ...while BOTH are clearly coloured (grey skin
+                          #    has no reliable hue) = a foreign object.
+                          # Two of these cues must fire together.
+
+
+def onion_skin_stats(bgr, hsv, gray, contour=None, mask=None):
+    """Measure the SURFACE of one candidate blob.
+
+    Returns a small dict of colour / texture numbers, all measured on an
+    ERODED interior (the rim is where background and shadows bleed in).
+    Pass `mask` (a 0/255 uint8 array the size of `bgr`) instead of
+    `contour` when the caller already has a mask - that is how the YOLO
+    path reuses this on a box crop.
+    """
+    if mask is None:
+        mask = np.zeros(gray.shape, np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+    m = mask > 0
+    if not m.any():
+        return {k: 0.0 for k in ("h_med", "s_med", "v_med", "g_std",
+                                 "green", "cyan_blue", "magenta",
+                                 "neutral_white", "gloss", "vivid",
+                                 "lab_b")}
+    # interior: erode the rim away (10% of the blob's shorter side)
+    ys, xs = np.where(m)
+    y0, y1, x0, x1 = int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())
+    k = max(3, int(0.10 * max(1, min(x1 - x0, y1 - y0))))
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k | 1, k | 1))
+    inner = cv2.erode((m * 255).astype(np.uint8), kern) > 0
+    if inner.sum() < max(50, 0.10 * m.sum()):
+        inner = m
+
+    H = hsv[:, :, 0].astype(np.int32)
+    S = hsv[:, :, 1].astype(np.int32)
+    V = hsv[:, :, 2].astype(np.int32)
+    h, s, v = H[inner], S[inner], V[inner]
+    n = max(1, len(h))
+    g = gray[inner].astype(np.float32)
+    st = {
+        "h_med": float(np.median(h)),
+        "s_med": float(np.median(s)),
+        "v_med": float(np.median(v)),
+        "g_std": float(g.std()),
+        # saturation-AWARE palette fractions: a dark grey pixel has an
+        # arbitrary hue, so a hue band alone would fire on real onions
+        "green": float(((H[inner] >= 40) & (H[inner] <= 90) &
+                        (S[inner] >= 60) & (V[inner] >= 60)).sum() / n),
+        "cyan_blue": float(((H[inner] >= 90) & (H[inner] <= 135) &
+                            (S[inner] >= 70)).sum() / n),
+        "magenta": float(((H[inner] >= 135) & (H[inner] < 168) &
+                          (S[inner] >= 70)).sum() / n),
+        "gloss": float(((V[inner] > 235) & (S[inner] < 60)).sum() / n),
+        "neutral_white": float(((S[inner] < 25) & (V[inner] > 210)).sum() / n),
+        "vivid": float(((V[inner] >= 205) & (S[inner] >= 165)).sum() / n),
+    }
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    st["lab_b"] = float(np.median(lab[:, :, 2][inner]))
+    return st
+
+
+def onion_palette_verdict(st):
+    """Return "" when the surface looks like onion skin, else a reason.
+
+    The reason string is shown to the user, so keep it plain and true.
+    """
+    if st.get("green", 0.0) > GATE_GREEN_MAX:
+        return "green surface (leaf / shoot / green vegetable, not onion skin)"
+    if st.get("cyan_blue", 0.0) > GATE_BLUE_MAX:
+        return "blue surface (not an onion colour)"
+    if st.get("magenta", 0.0) > GATE_MAGENTA_MAX:
+        return "purple surface (not an onion colour)"
+    if (st.get("neutral_white", 0.0) > GATE_WHITE_MAX
+            and st.get("g_std", 99.0) < GATE_WHITE_TEX):
+        return "plain smooth white object (not onion skin)"
+    if (st.get("gloss", 0.0) > GATE_GLOSS_MAX
+            and st.get("g_std", 99.0) < GATE_GLOSS_TEX):
+        return "mirror-gloss surface (glossy fruit / plastic, not papery skin)"
+    if (st.get("vivid", 0.0) > GATE_VIVID_MAX
+            and st.get("lab_b", 0.0) > GATE_VIVID_LABB):
+        return ("vivid, brightly saturated skin (citrus / fruit, "
+                "not onion skin)")
+    return ""
+
+
+def _photo_outlier_reasons(stats):
+    """Flag blobs that disagree with the rest of the SAME photo.
+
+    One photo = one variety in one light, so a blob that is 3x more
+    colourful AND a different hue than every other blob in the photo is
+    a foreign object. Needs >= GATE_MIN_BLOBS blobs and never fires on
+    a photo where the "onions" already disagree among themselves.
+    """
+    n = len(stats)
+    if n < GATE_MIN_BLOBS:
+        return [""] * n
+    rs = float(np.median([s["s_med"] for s in stats]))
+    rv = float(np.median([s["v_med"] for s in stats]))
+    rg = float(np.median([s["g_std"] for s in stats]))
+    rh = float(np.median([s["h_med"] for s in stats]))
+    out = []
+    for st in stats:
+        cues = []
+        if (st["s_med"] > max(60.0, GATE_SAT_RATIO * rs)
+                or st["s_med"] < min(12.0, rs / GATE_SAT_RATIO)):
+            cues.append("colourfulness")
+        if (st["v_med"] > GATE_VAL_RATIO * rv
+                or st["v_med"] < rv / GATE_VAL_RATIO):
+            cues.append("brightness")
+        dh = abs(st["h_med"] - rh)
+        dh = min(dh, 180 - dh)
+        if dh > GATE_HUE_DEG and min(st["s_med"], rs) > GATE_HUE_MIN_S:
+            cues.append("colour")
+        if (st["g_std"] > GATE_TEX_RATIO * rg
+                or st["g_std"] < rg / GATE_TEX_RATIO):
+            cues.append("surface texture")
+        out.append(("differs from the other onions in this photo ("
+                    + ", ".join(cues) + ")") if len(cues) >= 2 else "")
+    # SAFETY NET: never wipe out a photo - if that many blobs disagree
+    # the photo simply holds different-looking onions / mixed lighting.
+    if out and all(o != "" for o in out):
+        return [""] * n
+    keep = sum(1 for o in out if o == "")
+    if keep < 2:
+        return [""] * n
+    return out
+
+
+def verify_onions(bgr, hsv, gray, contours, vis_list=None, trusted=None,
+                  skip_all=False):
+    """Drop candidates that do not LOOK like an onion.
+
+      contours / vis_list / trusted - parallel lists (stay aligned)
+      skip_all                      - e.g. the whole-pile heap singleton:
+                                      it holds the entire pile, never drop
+
+    Returns (kept, kept_vis, kept_trusted, rejected) where `rejected` is
+    a list of human-readable reasons (one per dropped candidate).
+    """
+    vis_list = list(vis_list) if vis_list is not None else [None] * len(contours)
+    trusted = list(trusted) if trusted is not None else [False] * len(contours)
+    if skip_all or not contours:
+        return list(contours), vis_list, trusted, []
+
+    stats = [onion_skin_stats(bgr, hsv, gray, c) for c in contours]
+    palette = [onion_palette_verdict(s) for s in stats]
+    outliers = _photo_outlier_reasons(stats)
+
+    keep, rejected = [], []
+    for c, vis, tr, pal, out in zip(contours, vis_list, trusted,
+                                    palette, outliers):
+        why = pal or out
+        if why:
+            rejected.append(why)
+        else:
+            keep.append((c, vis, tr))
+    if not keep:
+        # every candidate failed the palette test -> this photo really
+        # holds no onion-looking object. Report ZERO onions (that is the
+        # whole point of "onions only") instead of grading a stranger.
+        return [], [], [], rejected
+    kept = [k[0] for k in keep]
+    kept_vis = [k[1] for k in keep]
+    kept_tr = [k[2] for k in keep]
+    return kept, kept_vis, kept_tr, rejected
+
+
+# ------------------------------------------------------------------
 # STEP 8 - find the coin (the ruler of the photo)
 # ------------------------------------------------------------------
 def find_coin(blobs, hsv, median_area):
@@ -2215,6 +2436,22 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                 "were counted. Keep hands and faces out of the frame "
                 "for best results.")
 
+        # --- "ONIONS ONLY" appearance gate: does it LOOK like an onion? ---
+        # Runs after the human/tool filter and before the coin ruler, so
+        # a non-onion can neither be counted nor poison the mm scale.
+        if GATE_ENABLED:
+            final, final_vis, final_trusted, not_onion_reasons = \
+                verify_onions(bgr, hsv, gray, final, final_vis,
+                              final_trusted, skip_all=heap_singleton)
+        else:
+            not_onion_reasons = []
+        if not_onion_reasons:
+            warnings.append(
+                f"{len(not_onion_reasons)} object(s) ignored because they "
+                "do not look like onion skin (" +
+                "; ".join(sorted(set(not_onion_reasons))[:3]) +
+                ") - only onions are graded.")
+
         # --- coin ruler ---
         coin = find_coin(final, hsv, median_area)
         if coin is not None:
@@ -2326,11 +2563,20 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     else:
         onions, coin, px_per_mm, scale_source = [], None, 1.0, "no objects found"
         n_non_onion, saw_person = 0, False
+        not_onion_reasons = []
         warnings.append("No onions detected! Check outputs/debug_mask_...jpg - "
                         "onions must be DARKER than the background.")
 
     # --- counts and percentages ---
     n = len(onions)
+    if n == 0 and (not_onion_reasons or n_non_onion):
+        warnings.append(
+            "NO onion found in this photo: the objects that were "
+            "segmented do not look like onion skin (the coin / reference "
+            "object is never counted as an onion). Photograph whole onion "
+            "bulbs on a plain background; a trained detector "
+            "(train_yolo.py) is needed to separate look-alikes such as "
+            "potatoes, apples or garlic.")
     if heap_estimated and n > 1:
         warnings.append(
             f"this looks like a HEAP/pile of onions - the {n} count is an "
@@ -2392,6 +2638,8 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         "scale_source": scale_source,
         "onion_count": n,
         "rejected_non_onion": n_non_onion,   # hands/people/tools ignored
+        "rejected_not_onion": len(not_onion_reasons),   # not onion skin
+        "not_onion_reasons": sorted(set(not_onion_reasons)),
         "human_detected": bool(saw_person),  # a person box touched a candidate
         "grade_counts": gc,
         "grade_percent": gp,

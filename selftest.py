@@ -17,7 +17,8 @@ computer-generated at KNOWN sizes, so the correct answer is known):
 
 HONESTY: passing this selftest only proves the CODE works on these
 SYNTHETIC images. Real-world accuracy must still be measured on real
-photos labeled by a human expert.
+photos labeled by a human expert - for the "ONIONS ONLY" gate that is
+what `python evaluate_gate.py` is for (it needs your own photos).
 
 RUN:  python selftest.py        (exit code 0 = all checks passed)
 """
@@ -49,6 +50,10 @@ CASES = [
      {"GOOD": 4}, "EXIF", [40.0, 55.0, 55.0, 55.0]),
     ("test_batch_7_uneven.jpg", {}, 4,
      {"GOOD": 4}, None, [55.0, 55.0, 55.0, 55.0]),
+    # ONION-ONLY gate: round objects that are NOT onions (green ball,
+    # blue cup, purple brinjal, glossy sphere) must NOT be counted.
+    # {} = no onion of any class may survive in this photo.
+    ("test_batch_8_not_onions.jpg", {"coin_mm": 27.0}, 0, {}, None, None),
 ]
 
 MM_TOL = 0.10          # measured diameter within 10% ...

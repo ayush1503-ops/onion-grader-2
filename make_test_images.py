@@ -131,6 +131,43 @@ def draw_onion(img, cx, cy, r_px, kind):
                     0, 0, 360, hsv_bgr(60, 160, 150), -1)
 
 
+def draw_not_onion(img, cx, cy, r_px, kind):
+    """
+    Draw something that is definitely NOT an onion - used by the
+    "ONIONS ONLY" regression test (selftest.py).
+
+      'green'   a green ball  (leaf / green vegetable surface)
+      'blue'    a blue cup    (plastic, a colour onion skin never has)
+      'purple'  a brinjal     (purple surface)
+      'glossy'  a glossy red apple-like sphere (mirror highlight)
+
+    Each one is round and stands out from the background exactly like an
+    onion does, so the ONLY way to reject them is to look at the surface.
+    """
+    if kind == "green":
+        for i in range(20):
+            t = i / 19.0
+            cv2.circle(img, (cx, cy), max(1, int(r_px * (1.0 - 0.75 * t))),
+                       hsv_bgr(70, 150, int(200 - 40 * t)), -1)
+    elif kind == "blue":
+        for i in range(20):
+            t = i / 19.0
+            cv2.circle(img, (cx, cy), max(1, int(r_px * (1.0 - 0.75 * t))),
+                       hsv_bgr(115, 170, int(210 - 50 * t)), -1)
+    elif kind == "purple":
+        cv2.ellipse(img, (cx, cy), (r_px, int(r_px * 0.72)), 0, 0, 360,
+                    hsv_bgr(145, 150, 95), -1)
+        cv2.ellipse(img, (cx, cy), (int(r_px * 0.75), int(r_px * 0.55)),
+                    0, 0, 360, hsv_bgr(148, 130, 70), -1)
+    else:  # 'glossy' - smooth + a hard specular highlight
+        for i in range(20):
+            t = i / 19.0
+            cv2.circle(img, (cx, cy), max(1, int(r_px * (1.0 - 0.75 * t))),
+                       hsv_bgr(4, 190, int(215 - 60 * t)), -1)
+        cv2.circle(img, (cx - int(0.35 * r_px), cy - int(0.35 * r_px)),
+                   max(3, int(0.22 * r_px)), hsv_bgr(0, 25, 255), -1)
+
+
 def finish(img, path, exif_f35=None):
     """Add a little photo-like noise, then save as JPEG.
     Quality 95 keeps edges clean so measurement stays accurate.
@@ -262,6 +299,22 @@ def main():
     finish(img, "test_images/test_batch_7_uneven.jpg")
     print("  ground truth: 4 GOOD 55mm onions, NO coin, strong left-right "
           "light gradient -> grader must still find all 4")
+
+    # ---------------- batch 8: NOT ONIONS (onion-only gate test) ------
+    # Round, well-lit objects that stand out from the background exactly
+    # like an onion - but their SURFACE is a colour onion skin never
+    # has. grader.py must find ZERO onions here (selftest.py checks it).
+    img = new_canvas()
+    draw_coin(img, 90, 830, 27, PPM)
+    draw_not_onion(img, 220, 250, mm2px(55), "green")
+    draw_not_onion(img, 520, 250, mm2px(55), "blue")
+    draw_not_onion(img, 820, 250, mm2px(55), "purple")
+    draw_not_onion(img, 360, 600, mm2px(55), "glossy")
+    draw_not_onion(img, 700, 600, mm2px(55), "green")
+    finish(img, "test_images/test_batch_8_not_onions.jpg")
+    print("  ground truth: 0 onions - 2 green balls, 1 blue cup, 1 purple "
+          "brinjal, 1 glossy red sphere -> the ONION-ONLY gate must "
+          "reject all of them (coin 27mm)")
 
     print("\nDone! Now run:")
     print("  python grader.py test_images/test_batch_1.jpg --coin-mm 27")
