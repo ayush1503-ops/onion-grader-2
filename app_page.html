@@ -1452,6 +1452,9 @@ function renderResults(d){
     "<div>onions <b>"+n+"</b></div>"+
     (r.rejected_non_onion?
       "<div>non-onion ignored <b>"+r.rejected_non_onion+"</b> 🖐</div>":"")+
+    (r.rejected_not_onion?
+      "<div>not onion skin <b style=\"color:var(--warn-c)\">"+
+      r.rejected_not_onion+"</b> rejected</div>":"")+
     "<div>watershed splits <b>"+r.watershed_splits+"</b></div>"+
     "<div>median ⌀ <b>"+(st.median!=null?st.median+" mm":"—")+"</b></div>"+
     "<div>est. weight <b>~"+r.estimated_weight_kg+" kg</b></div>"+

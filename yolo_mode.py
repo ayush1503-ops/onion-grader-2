@@ -237,6 +237,8 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
     # deep inside a detected person) is a human, not an onion.
     person_boxes = grader.detect_people(bgr)
     skipped_shape = skipped_person = 0
+    skipped_appearance = 0
+    appearance_reasons = []
 
     def _box_person_frac(bx, by, bw, bh):
         if not person_boxes or bw <= 0 or bh <= 0:
@@ -273,6 +275,21 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
                          cv2.COLOR_GRAY2BGR))
         if int(cmask.sum()) < 50:          # segmentation failed -> use box
             cmask = np.full((h, w), 255, np.uint8)
+
+        # ---- "ONIONS ONLY": the box must LOOK like onion skin too ----
+        # A detector only knows what it was TRAINED on: a stock COCO
+        # model (no onion class) happily boxes an apple or a hand. The
+        # appearance gate in grader.py is the same one the classic
+        # pipeline uses, so both modes answer "is this an onion?" the
+        # same honest way.
+        if grader.GATE_ENABLED:
+            skin = grader.onion_skin_stats(crop, crop_hsv, crop_gray,
+                                           mask=cmask)
+            why = grader.onion_palette_verdict(skin)
+            if why:
+                skipped_appearance += 1
+                appearance_reasons.append(why)
+                continue
 
         feats = grader.onion_features(crop_gray, crop_hsv, cmask)
         d_mm = ((w + h) / 2.0) / px_per_mm     # box average width/height
@@ -343,6 +360,12 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
             f"{skipped_shape + skipped_person} person-shaped YOLO box(es) "
             "ignored (humans are not onions) - keep hands and faces out "
             "of the photo.")
+    if skipped_appearance:
+        warnings.append(
+            f"{skipped_appearance} detected box(es) ignored because they "
+            "do not look like onion skin (" +
+            "; ".join(sorted(set(appearance_reasons))[:3]) +
+            ") - only onions are graded.")
 
     # rough pile-layer estimate for YOLO mode: use BOX overlap as the
     # occlusion cue (a box largely covered by another box = lower layer)
@@ -376,6 +399,8 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
         "classifier": f"{classifier}{cnn_txt}",
         "onion_count": n,
         "rejected_non_onion": n_non_onion,   # person/non-onion boxes ignored
+        "rejected_not_onion": skipped_appearance,   # not onion skin
+        "not_onion_reasons": sorted(set(appearance_reasons)),
         "human_detected": bool(saw_person),
         "grade_counts": gc,
         "grade_percent": gp,

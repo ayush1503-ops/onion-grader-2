@@ -48,6 +48,48 @@ Every analysis produces: `annotated.jpg`, `report.json` (embeds the photo),
 `report.txt`, `report_card.jpg`, and `full_report.jpg` (the whole report
 as ONE image).
 
+## Detect only onions (the ONION-ONLY gate)
+
+The segmenter finds *any* blob that stands out from the background, so an
+apple, a potato, a hand or a green shoot used to be counted and graded as
+an onion. `grader.verify_onions()` now asks the question the pipeline
+never asked — **"does this blob LOOK like onion skin?"** — in two ways:
+
+1. **Surface palette** — rejects surfaces onion skin never has: vivid
+   green (leaves/shoots), blue/cyan (plastic, cloth), purple (brinjal),
+   mirror-gloss (glossy fruit/plastic), plain smooth white (lids, cups).
+2. **Photo consistency** — inside one photo every onion shares variety
+   and light, so a blob that is far brighter/darker, far more colourful
+   or a different hue than *every* other onion in the same photo is a
+   foreign object (one apple in a pile of red onions).
+
+Rejected objects are **disclosed, never silently dropped**: the report
+carries `rejected_not_onion` + `not_onion_reasons`, the web UI shows a
+"not onion skin — n rejected" chip, and the app warns when a photo holds
+no onion-looking object at all.
+
+Measure it on your own photos (nothing is downloaded):
+
+```bash
+mkdir -p dataset_gate/onion dataset_gate/not_onion
+#   drop real onion photos in the first folder, apples/potatoes/hands/...
+#   in the second one
+python evaluate_gate.py                 # gate ON vs OFF, same photos
+python evaluate_gate.py --mixed         # also paste each foreign object
+                                        # into each onion photo
+```
+
+**Honest numbers** (measured 2026-09 on 19 onion photos + 32 non-onion
+photos): **94.5 % of real onion blobs kept**, **45.6 % of non-onion
+objects rejected**, **100 %** of the synthetic look-alikes in
+`test_batch_8_not_onions.jpg`. A lone potato, yellow apple, lemon or
+garlic bulb is made of the same browns and yellows as an onion — colour
+alone cannot separate those, and pushing the thresholds until they are
+caught starts deleting real onions. For true onion-only detection train a
+detector on labeled photos (it learns the *shape*, not just the colour):
+`prelabel_real.py` → `train_yolo.py` → `models/onion_yolo.pt`, then use
+YOLO mode in the app.
+
 ## Live camera system
 
 Quality meter (blur/brightness gates bad frames), torch + zoom (where the
@@ -92,7 +134,9 @@ app.py  app_page.html      main web app (Flask) + UI
 grader.py                  the whole CV pipeline + report generators
 camera.py                  CLI live camera (laptop webcam)
 offline/                   PWA: on-device AI, works with NO internet
-make_test_images.py        7 synthetic test batches (regression set)
+make_test_images.py        8 synthetic test batches (regression set,
+                           batch 8 = NOT onions, for the onion-only gate)
+evaluate_gate.py           measures the onion-only gate on your photos
 pytorch_cnn.py  tensorflow_cnn.py  transfer_learning.py
 make_dataset.py  evaluate.py  export_models.py  COLAB_TRAINING.md
 sam_label.py  tracker.py   dataset labeling + belt counting
@@ -104,13 +148,17 @@ models/  dataset/  outputs/   trained models, data, saved reports
 ## Tests / verification
 
 ```bash
-python make_test_images.py                    # rebuild the 7 test batches
+python make_test_images.py                    # rebuild the 8 test batches
 python grader.py test_images/test_batch_1.jpg # CLI, prints the report
+python selftest.py                            # all batches + gate: exit 0
+python evaluate_gate.py                       # onion-only gate, real photos
 python tracker.py /tmp/belt.mp4 --no-gui      # expect: UNIQUE ONIONS = 2
 python evaluate.py                            # confusion matrices
 ```
 
-Regression counts (all must hold): 8 / 6 / 4 / 6 / 8 / 2 / 2 onions.
+Regression counts (all must hold): 8 / 6 / 4 / 6 / 8 / 4 / 4 onions and
+**0 onions** in `test_batch_8_not_onions.jpg` (2 green balls, 1 blue cup,
+1 purple brinjal, 1 glossy sphere — all must be rejected).
 
 ## Deployment
 
