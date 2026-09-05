@@ -421,11 +421,15 @@ tr:last-child td{border-bottom:none}
 .report .warn-box{color:#6d4c14;background:#fbf5e8;
   border-color:#e4d5b3}
 .dl{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
-.dl a{font-size:.8rem;font-weight:600;text-decoration:none;color:var(--ink);
+.dl a,.dl button{font-size:.8rem;font-weight:600;text-decoration:none;
+  color:var(--ink);background:var(--paper);
   border:1px solid var(--line-2);border-radius:6px;padding:9px 15px;
   transition:border-color 150ms ease-out,color 150ms ease-out;
   display:inline-flex;align-items:center;gap:7px}
-.dl a:hover{border-color:var(--accent);color:var(--accent)}
+.dl a:hover,.dl button:hover{border-color:var(--accent);color:var(--accent)}
+.dl .openlink{font-size:.68rem;font-weight:500;padding:9px 6px;border:none;
+  color:var(--ink-3);text-decoration:underline;text-underline-offset:3px}
+.dl .openlink:hover{color:var(--accent)}
 .result-img{width:100%;border-radius:4px;border:1px solid var(--line)}
 .rep-disclaimer{margin-top:26px;font-size:.74rem;color:var(--ink-3);
   border-top:1px solid var(--line);padding-top:14px;text-align:center}
@@ -972,6 +976,70 @@ function appendForm(fd){
   fd.append("mode",s.mode);
 }
 
+/* ---- reliable downloads (works for /outputs URLs AND data: URIs) ----
+   A plain <a download> link FAILS for data: URIs in Firefox/Safari and is
+   ignored by mobile browsers (they just open the image) - so every button
+   below goes through a Blob + programmatic click with a proper file name.
+   If even that is blocked (e.g. a sandboxed preview iframe), the small
+   "open" link next to each button opens the file in a new tab instead. */
+var LAST_DL=null;   /* {urls:{...}} of the latest rendered report */
+function dataURLtoBlob(u){
+  var parts=u.split(","),head=parts[0];
+  var b64=parts.slice(1).join(",");
+  var mime=(head.match(/data:([^;]+)/)||[])[1]||"application/octet-stream";
+  var bin=atob(b64),n=bin.length,arr=new Uint8Array(n);
+  for(var i=0;i<n;i++){arr[i]=bin.charCodeAt(i);}
+  return new Blob([arr],{type:mime});
+}
+function saveBlob(blob,filename){
+  var a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=filename||"report";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},4000);
+  toast("Download started: "+(filename||"report"));
+}
+function dlFile(url,filename){
+  toast("Preparing download…");
+  try{
+    if(url.indexOf("data:")===0){saveBlob(dataURLtoBlob(url),filename);}
+    else{
+      fetch(url).then(function(r){
+        if(!r.ok){throw new Error("HTTP "+r.status);}
+        return r.blob();
+      }).then(function(b){saveBlob(b,filename);}).catch(function(){
+        toast("Download failed — use the <i>open</i> link next to the button and save manually.",true);
+      });
+    }
+  }catch(e){
+    toast("Download failed — use the <i>open</i> link next to the button and save manually.",true);
+  }
+}
+function dlKey(key){
+  if(!LAST_DL||!LAST_DL.urls||!LAST_DL.urls[key]){
+    toast("That file is not ready yet — run an analysis first.");return;}
+  var u=LAST_DL.urls;
+  dlFile(u[key],(u.names&&u.names[key])||("onion_"+key));
+}
+function openKey(key){
+  if(!LAST_DL||!LAST_DL.urls||!LAST_DL.urls[key]){return false;}
+  var u=LAST_DL.urls[key];
+  try{
+    if(u.indexOf("data:")===0){
+      window.open(URL.createObjectURL(dataURLtoBlob(u)),"_blank");
+    }else{window.open(u,"_blank");}
+  }catch(e){window.open(u,"_blank");}
+  return false;
+}
+function dlBtn(key,label){
+  /* download button + tiny "open" fallback link */
+  if(!LAST_DL||!LAST_DL.urls||!LAST_DL.urls[key]){return "";}
+  return '<span style="display:inline-flex;align-items:center;gap:2px">'+
+    '<button type="button" onclick="dlKey(\''+key+'\')">⬇ '+label+'</button>'+
+    '<a class="openlink" href="#" onclick="return openKey(\''+key+'\')">open</a></span>';
+}
+
 /* ---- navigation helpers ---- */
 function goAnalyse(){
   switchView("upload");
@@ -1382,6 +1450,8 @@ function renderResults(d){
     r.px_per_mm+" px/mm · "+r.scale_source+"</div></div>";
   html+='<div class="meta-chips">'+
     "<div>onions <b>"+n+"</b></div>"+
+    (r.rejected_non_onion?
+      "<div>non-onion ignored <b>"+r.rejected_non_onion+"</b> 🖐</div>":"")+
     "<div>watershed splits <b>"+r.watershed_splits+"</b></div>"+
     "<div>median ⌀ <b>"+(st.median!=null?st.median+" mm":"—")+"</b></div>"+
     "<div>est. weight <b>~"+r.estimated_weight_kg+" kg</b></div>"+
@@ -1477,22 +1547,26 @@ function renderResults(d){
     html+='<div class="warn-box" style="margin-top:10px">'+f+"</div>";});
   if(r.summary){html+='<div class="summary-box"><b>Summary</b>'+r.summary+"</div>";}
 
-  /* ---- downloads ---- */
+  /* ---- downloads (Blob-based buttons: work on phones, Safari,
+     Firefox AND for embedded data: URIs on serverless hosts) ---- */
   if(u&&u.annotated){
+    LAST_DL={urls:u};
     html+='<div class="panel layer-panel"><h3>Download the digital report</h3>';
     if(u.full){
       html+='<p class="hint" style="margin-bottom:12px">The <b>Full report (JPEG)</b> is one '+
         "photo-file with the whole report inside — photo, grades, quantity, layers, table "+
         "and disclaimer. Perfect for WhatsApp or printing.</p>"+
-        '<a href="'+u.full+'" target="_blank"><img class="result-img" src="'+u.full+
+        '<a href="#" onclick="return openKey(\'full\')"><img class="result-img" src="'+u.full+
         '" style="max-width:360px" alt="full report"></a>';
     }
     html+='<div class="dl">'+
-      (u.full?'<a href="'+u.full+'" download>Full report (JPEG)</a>':'')+
-      '<a href="'+u.annotated+'" download>Annotated image</a>'+
-      '<a href="'+u.card+'" download>Report card</a>'+
-      '<a href="'+u.txt+'" download>Text report</a>'+
-      '<a href="'+u.json+'" download>JSON report</a></div></div>';
+      dlBtn("full","Full report (JPEG)")+
+      dlBtn("annotated","Annotated image")+
+      dlBtn("card","Report card")+
+      dlBtn("txt","Text report")+
+      dlBtn("json","JSON report")+"</div>"+
+      '<p class="hint" style="margin-top:8px">If a download is blocked by the browser, '+
+      "tap the small <i>open</i> link next to it and save from there.</p></div>";
   }
 
   html+='<div class="rep-disclaimer">Visible-surface analysis only — a photo cannot '+

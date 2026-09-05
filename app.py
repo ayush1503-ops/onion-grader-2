@@ -171,31 +171,33 @@ def file_urls(rep):
 
     Serverless mode (VERCEL=1): the disk is ephemeral, so files are
     embedded straight into the JSON response as data: URIs instead of
-    links that would break on the next request."""
+    links that would break on the next request.
+
+    Every response also carries urls["names"][key] = the suggested file
+    name, so the page's download buttons (Blob-based, see dlKey in
+    app_page.html) can save data: URIs with a proper name too - a plain
+    <a download> link FAILS for data: URIs in Firefox/Safari and is
+    ignored by mobile browsers, which is why "report is not downloading"
+    happened on some phones/hosts.
+    """
     names = [os.path.basename(f) for f in rep.get("files", [])]
     if len(names) < 4:
         return {}
+    keys = ["annotated", "json", "txt", "card", "full"][:len(names)]
     if os.environ.get("VERCEL") == "1":
         import base64 as _b64
         mimes = {0: "image/jpeg", 1: "application/json",
                  2: "text/plain", 3: "image/jpeg", 4: "image/jpeg"}
         urls = {}
-        for i, key in enumerate(["annotated", "json", "txt", "card", "full"]):
-            if i >= len(names):
-                break
+        for i, key in enumerate(keys):
             path = os.path.join(OUTPUT_DIR, names[i])
             with open(path, "rb") as fh:
                 urls[key] = (f"data:{mimes[i]};base64,"
                              + _b64.b64encode(fh.read()).decode())
+        urls["names"] = {key: names[i] for i, key in enumerate(keys)}
         return urls
-    urls = {
-        "annotated": f"/outputs/{names[0]}",
-        "json":      f"/outputs/{names[1]}",
-        "txt":       f"/outputs/{names[2]}",
-        "card":      f"/outputs/{names[3]}",
-    }
-    if len(names) >= 5:
-        urls["full"] = f"/outputs/{names[4]}"   # one JPEG with everything
+    urls = {key: f"/outputs/{names[i]}" for i, key in enumerate(keys)}
+    urls["names"] = {key: names[i] for i, key in enumerate(keys)}
     return urls
 
 
@@ -293,10 +295,27 @@ def api_mode_info():
     return jsonify({"yolo_ready": ready, "message": msg})
 
 
+def _safe_name(name):
+    """Reject path tricks (../, absolute paths) - files live flat in one dir."""
+    base = os.path.basename(name or "")
+    if not base or base != name or ".." in base or base.startswith("."):
+        return None
+    return base
+
+
 @app.route("/outputs/<path:name>")
 def outputs(name):
-    """Download link for report files (annotated, json, txt, card)."""
-    return send_from_directory(OUTPUT_DIR, name, as_attachment=False)
+    """Serve report files (annotated, json, txt, card, full).
+
+    Default = inline (so <img> previews keep working). Add ?download=1
+    to force a "save file" dialog even in browsers that ignore the
+    <a download> attribute (mobile Safari and friends)."""
+    safe = _safe_name(name)
+    if safe is None:
+        return jsonify({"ok": False, "error": "bad file name"}), 400
+    as_dl = request.args.get("download") == "1"
+    return send_from_directory(OUTPUT_DIR, safe, as_attachment=as_dl,
+                               download_name=safe)
 
 
 # ------------------------------------------------------------------
@@ -328,7 +347,12 @@ def offline_file(name):
 @app.route("/uploads/<path:name>")
 def uploads(name):
     """Serve the uploaded original photo so it can be shown on the page."""
-    return send_from_directory(UPLOAD_DIR, name, as_attachment=False)
+    safe = _safe_name(name)
+    if safe is None:
+        return jsonify({"ok": False, "error": "bad file name"}), 400
+    as_dl = request.args.get("download") == "1"
+    return send_from_directory(UPLOAD_DIR, safe, as_attachment=as_dl,
+                               download_name=safe)
 
 
 @app.route("/health")
