@@ -18,3 +18,10 @@ __pycache__/
 # the trained onion classifier is a small pure-numpy JSON - it MUST
 # ship with the app (grader.py loads it at run time)
 !models/onion_clf.json
+
+# the scikit-learn "is it an onion?" model - same deal, plain JSON,
+# numpy-only at run time, the web app needs it to answer "not found"
+!models/onion_presence.json
+
+# the fine-tuned YOLOv8 detector (6 MB) - the app's YOLO mode needs it
+!models/onion_yolo.pt

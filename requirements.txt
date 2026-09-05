@@ -7,3 +7,7 @@ opencv-python-headless==4.11.0.86
 numpy==2.2.6
 pillow==11.2.1
 waitress>=3.0.0
+# OPTIONAL but recommended: lets the SERVER read iPhone HEIC/HEIF photos
+# directly (the browser already converts them to JPEG before upload, so
+# this is only a safety net for API clients that post raw HEIC).
+pillow-heif>=0.16.0
