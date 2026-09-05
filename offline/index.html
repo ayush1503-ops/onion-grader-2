@@ -394,6 +394,29 @@ function analyzeAll(bgr,coinMm){
       pieces.forEach(function(p){final.push(p);});
     }else final.push(c);
   });
+  /* ONIONS ONLY: drop clearly non-onion blobs (a hand/arm/tool reaching
+     into the photo is elongated; onions are round). Touching pairs were
+     just split above, so anything still this elongated is not an onion. */
+  var rejN=0;
+  final=final.filter(function(c){
+    var br=cv.boundingRect(c);
+    var ar=Math.max(br.width,br.height)/Math.max(1,Math.min(br.width,br.height));
+    var area=cv.contourArea(c),small=area<0.3*median,drop=false;
+    if(ar>=2.0&&small){drop=true;}             /* finger bit / sliver */
+    else if(ar>=1.7&&!small){
+      /* limb/tool: smooth + solid + clearly non-round (same rule as the
+         server pipeline; an unsplit touching pair is exempt - it is not
+         solid enough to trip this) */
+      var hull=new cv.Mat();
+      cv.convexHull(c,hull);
+      var hullArea=cv.contourArea(hull);hull.delete();
+      var sol=hullArea>0?area/hullArea:1;
+      if(sol>=0.92&&circOf(c)<=0.78){drop=true;}
+    }
+    if(drop){rejN++;try{c.delete();}catch(e){}return false;}
+    return true;});
+  if(rejN)result.warnings.push(rejN+" non-onion region(s) ignored "+
+    "(hands/elongated objects are not onions) - only onions were counted.");
   /* coin ruler: round + small; tie-break = least colourful (metal) */
   var coinCands=final.filter(function(c){
     return circOf(c)>=0.80&&cv.contourArea(c)<0.60*median;});

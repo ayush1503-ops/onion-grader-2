@@ -132,6 +132,37 @@ LAYER_NOTE = ("Layer assignment is an occlusion ESTIMATE from one 2D photo. "
 WEIGHT_K_G_PER_MM3 = 0.00051
 BORDER_PX = 12             # border ring used to sense light/dark background
 
+# --- "ONIONS ONLY" filter: humans / hands / tools are NEVER onions ------+
+# Why these exist: the segmenter finds ANY blob that stands out from the
+# background - a hand holding an onion, an arm, a face or a sleeve is a
+# blob too, and used to be counted as an onion. These gates run AFTER all
+# splitting (so touching-onion PAIRS, which look elongated BEFORE the
+# split, are never killed) and only drop candidates that are clearly NOT
+# onion-shaped, or sit deep inside a detected person.
+# NOTE (measured 2026-09): human SKIN COLOUR can NOT be used here - brown/
+# yellow onion skin falls in the same YCrCb range as human skin, so a skin
+# test fires on real onions too. Shape + person context is what separates
+# a hand (elongated / concave fingers) from an onion (round solid disc).
+NON_ONION_ASPECT_LIMB = 1.7    # smooth solid blob this elongated = finger/hand/
+                               # arm/tool. Measured margin: real final onion
+                               # pieces (incl. pile splits) reach aspect 1.48;
+                               # singles stay <= 1.06. Unsplit touching pairs
+                               # (~1.85) are exempt anyway: their visibility
+                               # (~0.79) is below the vis guard, and they are
+                               # normally split before this filter runs.
+NON_ONION_LIMB_SOLID_MIN = 0.92  # ...AND at least this solid (a limb is a
+                               # smooth solid bar; ragged pile pieces score
+                               # lower) AND fully visible (vis >= 0.85) AND
+                               # clearly non-round (circ <= 0.78).
+NON_ONION_LIMB_CIRC_MAX = 0.78
+NON_ONION_LIMB_VIS_MIN = 0.85
+NON_ONION_ASPECT_SMALL = 2.0   # ...this elongated AND small (< 0.3x the
+                               # median onion) = finger bit / sliver
+NON_ONION_PERSON_DEEP = 0.80   # >= this far inside a person box = face/torso
+NON_ONION_PERSON_LIMB = 0.50   # >= this far inside + not onion-shaped = limb/hand
+PERSON_MIN_H_FRAC = 0.22       # a person box must cover >= this of the frame
+                               # height - kills tiny HOG false-positive boxes
+
 # Indian coin diameters (approximate, in mm)
 COIN_MENU = {"10": 27.0, "2": 27.0, "5": 23.0, "1": 22.0}
 
@@ -210,6 +241,18 @@ def circularity(cnt):
     if per == 0:
         return 0.0
     return 4.0 * math.pi * cv2.contourArea(cnt) / (per * per)
+
+
+def solidity(cnt):
+    """How 'solid' a shape is: area / convex-hull area (1.0 = fully solid).
+
+    A fully visible onion is a solid disc (~0.95+). A spread hand is
+    concave (deep gaps between fingers, ~0.7-0.85). Occluded pile onions
+    are concave too - so this is only ever used together with a
+    fully-visible guard, never on its own."""
+    area = cv2.contourArea(cnt)
+    hull = cv2.contourArea(cv2.convexHull(cnt))
+    return area / hull if hull > 0 else 1.0
 
 
 # ------------------------------------------------------------------
@@ -796,6 +839,164 @@ def exif_focal_px(image_path, image_width_px):
         return f35 / 36.0 * float(image_width_px), None
     except Exception as exc:
         return None, str(exc)
+
+
+# ------------------------------------------------------------------
+# "ONIONS ONLY" filter - person detector + non-onion rejection
+# ------------------------------------------------------------------
+_hog_people = None
+_hog_tried = False
+
+
+def _people_detector():
+    """Cached HOG full-body person detector, or None if unavailable.
+
+    HOG ships INSIDE OpenCV (no model download, no new dependency), so it
+    also works on the serverless deployment. Some OpenCV builds dropped
+    it (5.x) - then this returns None and the shape gates below still
+    catch hands/arms/tools on their own."""
+    global _hog_people, _hog_tried
+    if _hog_tried:
+        return _hog_people
+    _hog_tried = True
+    try:
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        _hog_people = hog
+    except Exception:
+        _hog_people = None
+    return _hog_people
+
+
+def detect_people(bgr):
+    """Find full-body person boxes [[x, y, w, h]] with HOG (no model files).
+
+    Runs on a <=640 px copy for speed; boxes are scaled back to the full
+    frame. Only person-plausible boxes survive (taller than wide, big
+    enough to be a real person in frame). Returns [] when this OpenCV
+    build has no HOG person detector.
+    """
+    hog = _people_detector()
+    if hog is None:
+        return []
+    h, w = bgr.shape[:2]
+    sc = min(1.0, 640.0 / max(1, w))
+    small = (cv2.resize(bgr, (max(1, int(w * sc)), max(1, int(h * sc))),
+                        interpolation=cv2.INTER_AREA)
+             if sc < 1.0 else bgr)
+    try:
+        found = hog.detectMultiScale(small, winStride=(8, 8),
+                                     padding=(8, 8), scale=1.05)
+        boxes = found[0] if isinstance(found, tuple) else found
+    except Exception:
+        return []
+    out = []
+    for (x, y, bw, bh) in boxes:
+        if not (1.2 <= bh / max(1, bw) <= 4.5):
+            continue                          # people are taller than wide
+        if bh / max(1, small.shape[0]) < PERSON_MIN_H_FRAC:
+            continue                          # tiny box = detector noise
+        if sc < 1.0:
+            x, y, bw, bh = (int(v / sc) for v in (x, y, bw, bh))
+        out.append([x, y, bw, bh])
+    return out
+
+
+def _frac_inside_boxes(contour, boxes, shape):
+    """Fraction of a contour's own pixels lying inside any of the boxes."""
+    if not boxes:
+        return 0.0
+    x, y, w, h = cv2.boundingRect(contour)
+    H, W = shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(W, x + w), min(H, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.drawContours(m, [contour], -1, 255, -1, offset=(-x0, -y0))
+    n = int(cv2.countNonZero(m))
+    if n == 0:
+        return 0.0
+    inside = np.zeros_like(m)
+    for (bx, by, bw, bh) in boxes:
+        ix0, iy0 = max(x0, bx) - x0, max(y0, by) - y0
+        ix1, iy1 = min(x1, bx + bw) - x0, min(y1, by + bh) - y0
+        if ix1 > ix0 and iy1 > iy0:
+            inside[iy0:iy1, ix0:ix1] = 255
+    return int(cv2.countNonZero(cv2.bitwise_and(m, inside))) / n
+
+
+def _onion_likeness(area, aspect, circ):
+    """Higher = more onion-like. Only used by the keep-best safety net."""
+    return circ - abs(aspect - 1.0)
+
+
+def reject_non_onions(bgr, contours, vis_list, trusted, median_area,
+                      skip_all=False, person_boxes=None):
+    """Drop candidates that are clearly NOT onions (humans/hands/tools).
+
+    Runs AFTER splitting + secondary passes, BEFORE the coin ruler, so a
+    hand can neither be counted nor poison the mm scale.
+      contours/vis_list/trusted - parallel lists (stays aligned on return)
+      median_area               - typical blob area of THIS photo (size ruler)
+      skip_all                  - True for the un-splittable heap singleton:
+                                  it holds the whole pile, never drop it
+      person_boxes              - override for tests (None = detect here)
+
+    Returns (kept, kept_vis, kept_trusted, n_rejected, saw_person).
+    `saw_person` is True only when a person box actually overlaps a
+    candidate - a far-away false box never nags the user.
+    """
+    boxes = detect_people(bgr) if person_boxes is None else list(person_boxes)
+    if skip_all or not contours:
+        return (list(contours), list(vis_list), list(trusted), 0, False)
+
+    keep, reasons, pins = [], [], []
+    for c, vis in zip(contours, vis_list):
+        a = cv2.contourArea(c)
+        _x, _y, w, h = cv2.boundingRect(c)
+        aspect = max(w, h) / max(1, min(w, h))
+        circ = circularity(c)
+        sol = solidity(c)
+        vis = 1.0 if vis is None else float(vis)
+        pin = _frac_inside_boxes(c, boxes, bgr.shape)
+        pins.append(pin)
+
+        reason = ""
+        if pin >= NON_ONION_PERSON_DEEP:
+            reason = "deep inside a detected person (face/torso)"
+        elif (pin >= NON_ONION_PERSON_LIMB
+                and (aspect >= 1.8 or circ <= 0.60)):
+            reason = "overlaps a detected person and is not onion-shaped"
+        elif (aspect >= NON_ONION_ASPECT_LIMB
+                and sol >= NON_ONION_LIMB_SOLID_MIN
+                and circ <= NON_ONION_LIMB_CIRC_MAX
+                and vis >= NON_ONION_LIMB_VIS_MIN
+                and a >= 0.3 * median_area):
+            reason = "elongated limb/tool shape, not onion-shaped"
+        elif aspect >= NON_ONION_ASPECT_SMALL and a < 0.3 * median_area:
+            reason = "small elongated fragment (finger/sliver)"
+        keep.append(reason == "")
+        reasons.append(reason)
+
+    if not any(keep):
+        # SAFETY NET: never wipe out the whole photo (a false-positive
+        # gate must degrade to the old behaviour, not to zero onions).
+        # Keep the single most onion-like candidate.
+        best = max(range(len(contours)),
+                   key=lambda i: _onion_likeness(
+                       cv2.contourArea(contours[i]),
+                       max(cv2.boundingRect(contours[i])[2:]) /
+                       max(1, min(cv2.boundingRect(contours[i])[2:])),
+                       circularity(contours[i])))
+        keep[best] = True
+
+    kept_c = [c for c, k in zip(contours, keep) if k]
+    kept_v = [v for v, k in zip(vis_list, keep) if k]
+    kept_t = [t for t, k in zip(trusted, keep) if k]
+    n_rejected = len(contours) - len(kept_c)
+    saw_person = any(p > 0.15 for p in pins) and bool(boxes)
+    return kept_c, kept_v, kept_t, n_rejected, saw_person
 
 
 # ------------------------------------------------------------------
@@ -1509,6 +1710,9 @@ def make_text_report(rep, path):
     L.append(f"photo       : {rep['image']}")
     L.append(f"scale       : {rep['px_per_mm']:.2f} px/mm  [{rep['scale_source']}]")
     L.append(f"onions found: {rep['onion_count']}")
+    if rep.get("rejected_non_onion"):
+        L.append(f"non-onion ignored: {rep['rejected_non_onion']} region(s) "
+                 "(hands/people/tools are not onions)")
     L.append(f"watershed splits (touching pairs): {rep['watershed_splits']}")
     L.append("-" * 64)
     L.append("GRADE SUMMARY")
@@ -1990,6 +2194,27 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         # defensive: no visibility may ever be None from here on
         final_vis = [1.0 if v is None else v for v in final_vis]
 
+        # --- "ONIONS ONLY" filter: humans/hands/tools are never onions ---
+        # Runs after ALL splitting (touching pairs are split by now, so a
+        # still-elongated / person-overlapping candidate is genuinely not
+        # an onion) and before the coin ruler + sizing, so a hand can
+        # neither be counted nor poison the mm scale.
+        heap_singleton = heap_mode and len(final) == 1
+        final, final_vis, final_trusted, n_non_onion, saw_person = \
+            reject_non_onions(bgr, final, final_vis, final_trusted,
+                              median_area, skip_all=heap_singleton)
+        if n_non_onion:
+            warnings.append(
+                f"{n_non_onion} non-onion region(s) ignored "
+                "(hands/people/elongated objects are not onions) - only "
+                "onions were counted. Tip: keep hands and faces out of "
+                "the photo.")
+        elif saw_person:
+            warnings.append(
+                "a person was detected in the photo - only the onions "
+                "were counted. Keep hands and faces out of the frame "
+                "for best results.")
+
         # --- coin ruler ---
         coin = find_coin(final, hsv, median_area)
         if coin is not None:
@@ -2100,6 +2325,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
 
     else:
         onions, coin, px_per_mm, scale_source = [], None, 1.0, "no objects found"
+        n_non_onion, saw_person = 0, False
         warnings.append("No onions detected! Check outputs/debug_mask_...jpg - "
                         "onions must be DARKER than the background.")
 
@@ -2165,6 +2391,8 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         "px_per_mm": round(px_per_mm, 3),
         "scale_source": scale_source,
         "onion_count": n,
+        "rejected_non_onion": n_non_onion,   # hands/people/tools ignored
+        "human_detected": bool(saw_person),  # a person box touched a candidate
         "grade_counts": gc,
         "grade_percent": gp,
         "class_counts": cc,
@@ -2272,6 +2500,9 @@ def print_report(rep):
     print(f" date/time  : {rep['timestamp']}")
     print(f" scale      : {rep['px_per_mm']:.2f} px/mm  [{rep['scale_source']}]")
     print(f" onions     : {rep['onion_count']}")
+    if rep.get("rejected_non_onion"):
+        print(f" non-onion  : {rep['rejected_non_onion']} region(s) ignored "
+              "(hands/people/tools are not onions)")
     print(f" est weight : ~ {rep['estimated_weight_kg']} kg "
           f"(~ {rep['bags_50kg']} x 50-kg bags)   [calibratable model]")
     print("-" * 64)

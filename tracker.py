@@ -121,6 +121,9 @@ def detect_boxes(frame):
             x, y, w, h = cv2.boundingRect(c)
             if w < 12 or h < 12:
                 continue
+            if max(w, h) / max(1, min(w, h)) >= 2.2:
+                continue           # "ONIONS ONLY": a hand/arm reaching onto
+                                   # the belt is elongated - never an onion
             out.append((int(x / scale), int(y / scale),
                         int(w / scale), int(h / scale)))
         return out

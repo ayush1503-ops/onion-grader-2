@@ -213,12 +213,14 @@ def _coin_scale(bgr, hsv, coin_mm, distance_mm=None, assume_mm=None):
 # measure + classify + grade every detection
 # ----------------------------------------------------------------------------
 def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
-                       classifier="cnn"):
+                       classifier="cnn", skipped_class=0, skipped_names=()):
     """Apply the SAME size + grade logic to YOLO detections.
 
     classifier: 'cnn'   crop each box -> Step 5/6 CNN classifier
                 'yolo'  trust the fine-tuned YOLO class
                 'rules' classic color rules from grader.py
+    skipped_class: boxes already dropped for a non-onion YOLO class
+                   (e.g. 'person') - reported, never graded.
     """
     gray, _ = grader.make_object_mask(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -231,12 +233,36 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
                         "onion_cnn.pt) - falling back to YOLO class and "
                         "color rules. Train Step 5a/6a first for CNN labels.")
 
+    # "ONIONS ONLY" also for YOLO boxes: a person-shaped box (tall /
+    # deep inside a detected person) is a human, not an onion.
+    person_boxes = grader.detect_people(bgr)
+    skipped_shape = skipped_person = 0
+
+    def _box_person_frac(bx, by, bw, bh):
+        if not person_boxes or bw <= 0 or bh <= 0:
+            return 0.0
+        hit = 0
+        for (px, py, pw, ph) in person_boxes:
+            ix = max(0, min(bx + bw, px + pw) - max(bx, px))
+            iy = max(0, min(by + bh, py + ph) - max(by, py))
+            hit += ix * iy
+        return min(1.0, hit / float(bw * bh))
+
     onions = []
-    for i, d in enumerate(dets, 1):
+    oid = 0
+    for d in dets:
         x, y, w, h = d["bbox_px"]
         H, W = bgr.shape[:2]
         x, y = max(0, x), max(0, y)
         w, h = min(w, W - x), min(h, H - y)
+        if w <= 0 or h <= 0:
+            continue
+        if max(w, h) / max(1, min(w, h)) >= 2.2:
+            skipped_shape += 1      # tall/wide person-like box, not an onion
+            continue
+        if _box_person_frac(x, y, w, h) >= grader.NON_ONION_PERSON_DEEP:
+            skipped_person += 1     # box sits on a detected person
+            continue
         crop = bgr[y:y + h, x:x + w]
         crop_gray = gray[y:y + h, x:x + w]
         crop_hsv = hsv[y:y + h, x:x + w]
@@ -268,8 +294,9 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
         if label == "GOOD" and d_mm < grader.UNDERSIZED_MM:
             label = "UNDERSIZED"
 
+        oid += 1
         onions.append({
-            "id": i, "label": label, "label_source": source,
+            "id": oid, "label": label, "label_source": source,
             "class_conf": (round(class_conf, 3) if class_conf else None),
             "diameter_mm": round(d_mm, 1),
             "grade": grader.grade_of(label, d_mm),
@@ -302,6 +329,21 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
     tot_kg = sum(o["mass_g"] for o in onions) / 1000.0 if n else 0.0
     qflags = grader.quality_checks(gray, hsv)
 
+    # "ONIONS ONLY" report: every skipped box is disclosed, never silent
+    n_non_onion = skipped_class + skipped_shape + skipped_person
+    saw_person = bool(skipped_person) or any(
+        str(c).lower() == "person" for c in skipped_names)
+    if skipped_class:
+        names = ", ".join(sorted(set(map(str, skipped_names)))[:5])
+        warnings.append(
+            f"{skipped_class} non-onion YOLO box(es) ignored ({names}) - "
+            "only onions are graded.")
+    if skipped_shape + skipped_person:
+        warnings.append(
+            f"{skipped_shape + skipped_person} person-shaped YOLO box(es) "
+            "ignored (humans are not onions) - keep hands and faces out "
+            "of the photo.")
+
     # rough pile-layer estimate for YOLO mode: use BOX overlap as the
     # occlusion cue (a box largely covered by another box = lower layer)
     for i, o in enumerate(onions):
@@ -333,6 +375,8 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
         "detector": "YOLOv8 (fine-tuned onion model)",
         "classifier": f"{classifier}{cnn_txt}",
         "onion_count": n,
+        "rejected_non_onion": n_non_onion,   # person/non-onion boxes ignored
+        "human_detected": bool(saw_person),
         "grade_counts": gc,
         "grade_percent": gp,
         "class_counts": cc,
@@ -440,10 +484,18 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         raise FileNotFoundError(f"Could not read image: {image}")
 
     dets = detect(bgr, conf=conf, model_path=model_path)
-    rep, coin, bgr = _measure_and_grade(bgr, dets, coin_mm,
+    # "ONIONS ONLY": keep only known onion classes. A stock COCO model
+    # (CLI demo) labels people/chairs/etc. - those must never be graded
+    # as onions.
+    onion_dets = [d for d in dets if d["yolo_class"] in ONION_CLASS_NAMES]
+    skipped_names = [d["yolo_class"] for d in dets
+                     if d["yolo_class"] not in ONION_CLASS_NAMES]
+    rep, coin, bgr = _measure_and_grade(bgr, onion_dets, coin_mm,
                                         distance_mm=distance_mm,
                                         assume_mm=assume_mm,
-                                        classifier=classifier)
+                                        classifier=classifier,
+                                        skipped_class=len(skipped_names),
+                                        skipped_names=skipped_names)
     if model_path:
         rep["detector"] = f"YOLOv8 ({os.path.basename(model_path)})"
     if batch_id:
