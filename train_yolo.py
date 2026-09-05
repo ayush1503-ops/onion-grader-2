@@ -88,7 +88,11 @@ def main():
         description="Step 7b - fine-tune YOLOv8n on your onion data")
     ap.add_argument("--data", default=DATA_YAML, help="dataset.yaml path")
     ap.add_argument("--model", default="yolov8n.pt",
-                    help="starting weights (auto-downloads ~6 MB once)")
+                    help="starting weights (auto-downloads ~6 MB once); use "
+                    "'yolov8n.yaml' to train from scratch with no download")
+    ap.add_argument("--scratch", action="store_true",
+                    help="force training from scratch (yolov8n.yaml, no "
+                    "pretrained weights, fully offline)")
     ap.add_argument("--epochs", type=int, default=50)   # spec default
     ap.add_argument("--imgsz", type=int, default=640)   # spec default
     ap.add_argument("--batch", type=int, default=16)    # spec default
@@ -116,9 +120,30 @@ def main():
             print("  For real training use Google Colab's free T4 GPU")
             print("  (see the header of this file for the exact steps).")
 
-    print(f"\nFine-tuning {args.model} for {args.epochs} epochs "
-          f"(imgsz={args.imgsz}, batch={args.batch})...")
-    model = YOLO(args.model)                  # 'yolov8n.pt' auto-downloads
+    # Load the starting model. A .yaml builds the YOLOv8n architecture and
+    # trains from scratch (no download at all - works fully offline). A .pt
+    # uses pretrained weights; if the download is impossible (offline /
+    # blocked network) we fall back to the scratch .yaml so training still
+    # runs instead of failing.
+    if args.model.endswith(".yaml") or args.scratch:
+        model = YOLO("yolov8n.yaml")
+        print(f"\nTraining YOLOv8n FROM SCRATCH (no pretrained weights) for "
+              f"{args.epochs} epochs (imgsz={args.imgsz}, batch={args.batch})...")
+    else:
+        try:
+            model = YOLO(args.model)          # 'yolov8n.pt' auto-downloads
+            print(f"\nFine-tuning {args.model} for {args.epochs} epochs "
+                  f"(imgsz={args.imgsz}, batch={args.batch})...")
+        except Exception as exc:
+            print(f"\nCould not load pretrained weights {args.model}: {exc}")
+            print("Falling back to training YOLOv8n FROM SCRATCH "
+                  "(yolov8n.yaml) - no download needed. Pretrained COCO "
+                  "weights reach higher accuracy faster, but scratch works "
+                  "fully offline and still proves the pipeline.")
+            model = YOLO("yolov8n.yaml")
+            print(f"\nTraining YOLOv8n FROM SCRATCH for {args.epochs} epochs "
+                  f"(imgsz={args.imgsz}, batch={args.batch})...")
+
     model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz,
                 batch=args.batch, workers=args.workers)
 

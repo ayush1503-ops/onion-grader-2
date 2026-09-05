@@ -140,7 +140,8 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
         if mode == "yolo":
             rep = yolo_mode.analyze(save_path, coin_mm=coin_mm,
                                     batch_id=batch_id, out_dir=OUTPUT_DIR,
-                                    distance_mm=dist_mm, assume_mm=assu_mm)
+                                    distance_mm=dist_mm, assume_mm=assu_mm,
+                                    classifier="yolo")
         else:
             rep = grader.analyze(save_path, coin_mm=coin_mm,
                                  batch_id=batch_id, out_dir=OUTPUT_DIR,
@@ -270,7 +271,8 @@ def api_live():
 
     try:
         if mode == "yolo":
-            rep = yolo_mode.analyze_frame(bgr, coin_mm=coin_mm)
+            rep = yolo_mode.analyze_frame(bgr, coin_mm=coin_mm,
+                                          classifier="yolo")
         else:
             rep = grader.analyze_frame(
                 bgr, coin_mm=coin_mm,

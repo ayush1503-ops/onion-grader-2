@@ -18,3 +18,7 @@ __pycache__/
 # the trained onion classifier is a small pure-numpy JSON - it MUST
 # ship with the app (grader.py loads it at run time)
 !models/onion_clf.json
+# the fine-tuned YOLOv8 onion detector (trained on the synthetic dummy
+# dataset) ships too, so YOLO mode in the web app works out of the box.
+# Replace it with a real-photo model by rerunning train_yolo.py.
+!models/onion_yolo.pt

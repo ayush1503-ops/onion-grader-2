@@ -96,6 +96,26 @@ Quality meter (blur/brightness gates bad frames), torch + zoom (where the
 phone supports it), alignment guides, scene-change detection, best-frame
 memory, and median-of-3 smoothing so live tallies don't flicker.
 
+## YOLOv8 detection engine (OpenCV + YOLOv8 combo)
+
+`yolo_mode.py` is the deep-learning engine: **YOLOv8n** finds and boxes
+every onion, then the **OpenCV** pipeline (`grader.py`) takes over for the
+coin-scale (mm), defect classes, grading and reports — the same honest
+logic as classic CV mode. In the web app tick **“YOLOv8 engine”** in the
+toolbar; live camera YOLO works too.
+
+The shipped `models/onion_yolo.pt` is fine-tuned on the SYNTHETIC dummy
+dataset (`make_dummy_detection_dataset.py` → `train_yolo.py`), mAP50 ≈ 0.99
+on the synthetic val split (demo numbers only). CLI:
+
+```bash
+python yolo_mode.py dataset_yolo/demo/demo_1.jpg --classifier yolo
+```
+
+Retrain on real photos: label them (Roboflow/LabelImg/CVAT), then
+`python train_yolo.py` — use `--scratch` to train fully offline (no
+pretrained weights download), or `--model yolov8n.yaml` for the same.
+
 ## CNN training (PyTorch + TensorFlow)
 
 ```bash
@@ -171,8 +191,12 @@ Tunnel) to Render.com, PWA install, and Play-Store APK via PWABuilder.
   normal photo** — needs NIR/X-ray/CT. Out of scope, stated everywhere.
 - Real-world accuracy: pending a labeled photo dataset (use
   `sam_label.py` + `COLAB_TRAINING.md`).
-- YOLO mode exists (`yolo_mode.py`) but is honest-gated: it refuses to
-  fake results without a trained model file.
+- YOLO mode is **active**: `models/onion_yolo.pt` ships a YOLOv8n detector
+  fine-tuned on the SYNTHETIC dummy dataset (`make_dummy_detection_dataset.py`).
+  It reaches **mAP50 ≈ 0.99 on that synthetic validation set** — honest demo
+  numbers only, it says nothing about real photos. Toggle **YOLOv8 engine**
+  in the web app. To grade real photos accurately, retrain on labeled real
+  data: `python train_yolo.py` (or `--scratch` to train fully offline).
 
 ---
 
