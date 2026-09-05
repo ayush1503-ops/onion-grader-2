@@ -366,6 +366,8 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
             "do not look like onion skin (" +
             "; ".join(sorted(set(appearance_reasons))[:3]) +
             ") - only onions are graded.")
+    if n == 0:
+        warnings.append(grader.NO_ONION_ERROR)
 
     # rough pile-layer estimate for YOLO mode: use BOX overlap as the
     # occlusion cue (a box largely covered by another box = lower layer)
@@ -398,6 +400,7 @@ def _measure_and_grade(bgr, dets, coin_mm, distance_mm=None, assume_mm=None,
         "detector": "YOLOv8 (fine-tuned onion model)",
         "classifier": f"{classifier}{cnn_txt}",
         "onion_count": n,
+        "onion_detected": n > 0,
         "rejected_non_onion": n_non_onion,   # person/non-onion boxes ignored
         "rejected_not_onion": skipped_appearance,   # not onion skin
         "not_onion_reasons": sorted(set(appearance_reasons)),

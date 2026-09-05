@@ -201,6 +201,18 @@ DISCLAIMER = ("VISIBLE SURFACE ANALYSIS ONLY - a normal photo cannot detect "
               "Thresholds are demo starting points; real accuracy must be "
               "measured on a labeled test set.")
 
+# Shown by the web app (HTTP error) and reports when the pipeline finds
+# zero onion-looking objects. Keep it plain: this is a detection failure,
+# not a grade of 0%.
+NO_ONION_ERROR = (
+    "No onion detected in the photo. Photograph whole onion bulbs on a "
+    "plain, contrasting background so they stand out clearly."
+)
+NO_ONION_LIVE = (
+    "No onion detected. Point the camera at whole onion bulbs on a "
+    "plain, contrasting background."
+)
+
 # BGR drawing colors, one per class
 CLASS_COLORS = {
     "GOOD":       (80, 200, 80),
@@ -2066,8 +2078,7 @@ def quality_checks(gray, hsv):
 def build_summary(n, splits, gc, gp, cc, weight_kg, scale_source, flags):
     """One human sentence describing the batch (shown in reports)."""
     if n == 0:
-        return ("No onions detected. Check the light and background - "
-                "onions must stand out from what is behind them.")
+        return NO_ONION_ERROR
     parts = [f"{n} onion{'s' if n != 1 else ''} detected"]
     if splits:
         parts.append(f"{splits} touching group{'s' if splits != 1 else ''} "
@@ -2564,19 +2575,22 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         onions, coin, px_per_mm, scale_source = [], None, 1.0, "no objects found"
         n_non_onion, saw_person = 0, False
         not_onion_reasons = []
-        warnings.append("No onions detected! Check outputs/debug_mask_...jpg - "
-                        "onions must be DARKER than the background.")
+        warnings.append(NO_ONION_ERROR)
 
     # --- counts and percentages ---
     n = len(onions)
-    if n == 0 and (not_onion_reasons or n_non_onion):
-        warnings.append(
-            "NO onion found in this photo: the objects that were "
-            "segmented do not look like onion skin (the coin / reference "
-            "object is never counted as an onion). Photograph whole onion "
-            "bulbs on a plain background; a trained detector "
-            "(train_yolo.py) is needed to separate look-alikes such as "
-            "potatoes, apples or garlic.")
+    if n == 0:
+        # Always surface a detection-failure warning, even when blobs
+        # were found and then rejected (hands, cups, green balls, ...).
+        if NO_ONION_ERROR not in warnings:
+            warnings.append(NO_ONION_ERROR)
+        if not_onion_reasons or n_non_onion:
+            warnings.append(
+                "The objects in this photo do not look like onion skin "
+                "(the coin / reference object is never counted as an onion). "
+                "Photograph whole onion bulbs on a plain background; a "
+                "trained detector (train_yolo.py) is needed to separate "
+                "look-alikes such as potatoes, apples or garlic.")
     if heap_estimated and n > 1:
         warnings.append(
             f"this looks like a HEAP/pile of onions - the {n} count is an "
@@ -2637,6 +2651,7 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
         "px_per_mm": round(px_per_mm, 3),
         "scale_source": scale_source,
         "onion_count": n,
+        "onion_detected": n > 0,
         "rejected_non_onion": n_non_onion,   # hands/people/tools ignored
         "rejected_not_onion": len(not_onion_reasons),   # not onion skin
         "not_onion_reasons": sorted(set(not_onion_reasons)),
@@ -2748,6 +2763,8 @@ def print_report(rep):
     print(f" date/time  : {rep['timestamp']}")
     print(f" scale      : {rep['px_per_mm']:.2f} px/mm  [{rep['scale_source']}]")
     print(f" onions     : {rep['onion_count']}")
+    if not rep.get("onion_detected", rep["onion_count"] > 0):
+        print(f" ERROR      : {NO_ONION_ERROR}")
     if rep.get("rejected_non_onion"):
         print(f" non-onion  : {rep['rejected_non_onion']} region(s) ignored "
               "(hands/people/tools are not onions)")

@@ -151,9 +151,9 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
     except Exception as exc:                       # friendly error page
         return None, f"Analysis failed: {exc}"
 
-    # Return error if no onions were detected
-    if rep.get("onion_count", 0) == 0:
-        return None, "No onion detected in the photo. Please ensure the photo shows whole onion bulbs on a plain, contrasting background. The onions must be clearly darker (or brighter) than the background."
+    # Detection failure is an error, not a 0% grade of an empty batch.
+    if not rep.get("onion_detected", rep.get("onion_count", 0) > 0):
+        return None, grader.NO_ONION_ERROR
 
     urls = file_urls(rep)
     if os.environ.get("VERCEL") == "1":          # embed the photo too
@@ -284,7 +284,13 @@ def api_live():
     # frame size (after any server-side resize) so the browser canvas
     # can line up the overlay boxes exactly
     rep["frame_w"], rep["frame_h"] = int(bgr.shape[1]), int(bgr.shape[0])
-    return jsonify({"ok": True, "rep": clean_report(rep)})
+    payload = {"ok": True, "rep": clean_report(rep)}
+    if not rep.get("onion_detected", rep.get("onion_count", 0) > 0):
+        # Live scanning must keep running (HTTP 200) so the next frame
+        # can recover; the page shows this as a red "no onion" error.
+        payload["no_onion"] = True
+        payload["error"] = grader.NO_ONION_LIVE
+    return jsonify(payload)
 
 
 @app.route("/api/mode-info")
