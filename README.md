@@ -49,6 +49,30 @@ Every analysis produces: `annotated.jpg`, `report.json` (embeds the photo),
 `report.txt`, `report_card.jpg`, and `full_report.jpg` (the whole report
 as ONE image).
 
+## Mobile photo upload
+
+Phones were the main way this app is used and the main way uploads
+broke. What was wrong and what now handles it:
+
+| Phone behaviour | Old result | Fix |
+|---|---|---|
+| `capture="environment"` on the only file input | Android **forced the camera** — you could never pick an existing photo | plain picker + separate **Choose from gallery** / **Take a photo** buttons |
+| iOS Safari invalidates `input.files` after re-render | "Analyse" silently did nothing | the chosen `File` is held in a JS variable, never re-read from the input |
+| iOS posts a blob with **no filename** | server replied *"Please choose a photo first"* | the server validates the **bytes**, not the file name |
+| iPhones save **HEIC** | server could not decode it | browser re-encodes to JPEG on a canvas; server has a Pillow/`pillow-heif` fallback |
+| Portrait photos carry an EXIF rotation flag | onions measured sideways | `decode_photo()` applies orientation itself (verified pixel-identical to Pillow's `exif_transpose`) |
+| 5–20 MB camera photos vs the 4 MB limit | HTTP 413, no explanation | downscaled to 2000 px in the browser; plain-English error if still too big |
+| No feedback after picking a photo | users unsure it worked | filename, file size and a **thumbnail preview** appear immediately |
+
+Tap targets are ≥46 px and inputs use 16 px text (smaller text makes iOS
+zoom the page on focus). The server also accepts the `photo`, `file`,
+`image` and `frame` field names, so share-targets and integrations work.
+
+```bash
+python selftest_mobile_upload.py   # replays 13 real phone payloads
+node   selftest_upload_js.js       # filename / HEIC-detection logic
+```
+
 ## Step 0 — "Is there an onion at all?" (scikit-learn)
 
 Before anything is graded, `onion_presence.py` asks one question about

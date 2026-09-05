@@ -58,7 +58,12 @@ UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(BASE_DIR, "outputs"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# Extensions we accept. HEIC/HEIF are what iPhones produce by default:
+# the browser converts them to JPEG before upload (see toUploadJpeg in
+# app_page.html), but the file NAME often still ends in .heic, so the
+# name alone must never be the reason an upload is refused.
+ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp",
+               ".heic", ".heif", ".jfif", ".gif", ".tif", ".tiff"}
 # STEP 0 gate: the scikit-learn "is there an onion here?" model
 # (onion_presence.py). Set ONION_PRESENCE=0 to switch it off.
 PRESENCE_ENABLED = os.environ.get("ONION_PRESENCE", "1") != "0"
@@ -118,21 +123,119 @@ def clean_report(rep):
 
 
 # ------------------------------------------------------------------
+# Helper: decode ANY photo a phone might send
+# ------------------------------------------------------------------
+def _exif_rotate(bgr, raw):
+    """Apply the EXIF orientation flag phones set instead of rotating.
+
+    A photo taken in portrait on a phone is usually stored LANDSCAPE with
+    an "orientation: 6" tag. OpenCV ignores that tag, so the pipeline saw
+    sideways photos - onions came out measured along the wrong axis and
+    the annotated report looked rotated. Pillow reads the tag for us.
+    """
+    try:
+        from PIL import Image as PILImage
+        import io
+        pil = PILImage.open(io.BytesIO(raw))
+        orient = (pil.getexif() or {}).get(274, 1)     # 274 = Orientation
+    except Exception:
+        return bgr
+    if orient == 3:
+        return cv2.rotate(bgr, cv2.ROTATE_180)
+    if orient == 6:
+        return cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE)
+    if orient == 8:
+        return cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if orient == 2:
+        return cv2.flip(bgr, 1)
+    if orient == 4:
+        return cv2.flip(bgr, 0)
+    if orient == 5:
+        return cv2.rotate(cv2.flip(bgr, 1), cv2.ROTATE_90_CLOCKWISE)
+    if orient == 7:
+        return cv2.rotate(cv2.flip(bgr, 1), cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return bgr
+
+
+def decode_photo(raw):
+    """bytes -> upright BGR image, or None if it is not a readable photo.
+
+    Tries, in order:
+      1. OpenCV        - JPEG / PNG / WEBP / BMP / TIFF
+      2. Pillow        - anything else OpenCV skips, incl. HEIC/HEIF when
+                         pillow-heif is installed (optional dependency)
+    Then applies the EXIF orientation so portrait phone photos are upright.
+    """
+    if not raw:
+        return None
+    buf = np.frombuffer(raw, np.uint8)
+    # IMREAD_IGNORE_ORIENTATION: OpenCV >= 4.7 silently applies the EXIF
+    # rotation itself, older builds do not. We turn its version-dependent
+    # behaviour OFF and always rotate ourselves, so the result is
+    # identical on every host (double-rotation was landing phone photos
+    # sideways on new OpenCV builds).
+    bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    if bgr is None:
+        try:
+            import io
+            from PIL import Image as PILImage
+            try:                       # optional: iPhone HEIC support
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except Exception:
+                pass
+            pil = PILImage.open(io.BytesIO(raw)).convert("RGB")
+            bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+    if bgr is None or bgr.size == 0:
+        return None
+    return _exif_rotate(bgr, raw)
+
+
+# ------------------------------------------------------------------
 # Helper: run the whole pipeline on one upload
 # ------------------------------------------------------------------
 def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
                  distance_cm=None, assume_mm=None):
     """Save the upload -> run the pipeline -> build download URLs."""
+    # ---- MOBILE-SAFE INTAKE -------------------------------------
+    # Phone browsers are wildly inconsistent about what they send:
+    #   * iOS Safari camera captures often arrive as "image.jpg" but can
+    #     also be HEIC, or carry NO filename at all (blob uploads).
+    #   * Some Android WebViews send "blob" or an empty filename.
+    #   * Photos are routinely rotated only by an EXIF orientation flag.
+    # So we decode the BYTES and never trust the file name. The name is
+    # used for the saved copy only, and we always normalise it to .jpg.
+    raw = file_storage.read()
+    if not raw:
+        return None, ("The photo did not arrive (0 bytes). This usually "
+                      "means the upload was interrupted - try again, or "
+                      "pick the photo from your gallery instead of the "
+                      "camera.")
+
     filename = secure_filename(file_storage.filename or "")
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in ALLOWED_EXT:
-        return None, "Please upload a photo file (.jpg .jpeg .png .webp .bmp)"
+    if ext and ext not in ALLOWED_EXT:
+        return None, ("That file is not a photo. Please choose a JPG, PNG, "
+                      "WEBP or HEIC image.")
 
-    # unique name so two uploads never overwrite each other
+    bgr = decode_photo(raw)
+    if bgr is None:
+        return None, ("Could not read that photo. If it came from an "
+                      "iPhone it may be in HEIC format - open it once in "
+                      "the Photos app and share/save it as JPEG, or set "
+                      "Settings > Camera > Formats > Most Compatible.")
+
+    # Re-encode to a plain JPEG: one predictable format on disk, EXIF
+    # rotation already applied, and the report images stay correct.
+    stem = os.path.splitext(os.path.basename(filename))[0] or "photo"
     stamp = grader.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    save_name = f"{stamp}_{filename}"
+    save_name = f"{stamp}_{stem}.jpg"
     save_path = os.path.join(UPLOAD_DIR, save_name)
-    file_storage.save(save_path)
+    ok_write = cv2.imwrite(save_path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok_write:
+        return None, "Could not save the uploaded photo on the server."
 
     coin_mm, dist_mm, assu_mm, err = resolve_coin(
         coin_preset, coin_custom, distance_cm, assume_mm)
@@ -145,12 +248,10 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
     # an honest "Onion not found" instead of invented grades.
     presence = None
     if PRESENCE_ENABLED:
-        bgr0 = cv2.imread(save_path)
-        if bgr0 is not None:
-            presence = onion_presence.check(bgr0)
-            if not presence["is_onion"]:
-                return None, (onion_presence.NOT_FOUND_MSG + " Reason: "
-                              + presence["reason"])
+        presence = onion_presence.check(bgr)
+        if not presence["is_onion"]:
+            return None, (onion_presence.NOT_FOUND_MSG + " Reason: "
+                          + presence["reason"])
 
     try:
         if mode == "yolo":
@@ -244,10 +345,20 @@ def home():
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     """The page sends the photo here. Returns JSON results."""
-    photo = request.files.get("photo")
-    if photo is None or photo.filename == "":
+    # Accept a few field names: "photo" is ours, but integrations and
+    # some mobile share-targets post "file" / "image" / "frame".
+    photo = (request.files.get("photo") or request.files.get("file")
+             or request.files.get("image") or request.files.get("frame"))
+    if photo is None and request.files:
+        # last resort: take whatever single file was posted. iOS Safari
+        # sometimes sends a blob under an empty/odd field name, and
+        # rejecting it was the "Analyse does nothing on iPhone" bug.
+        photo = next(iter(request.files.values()), None)
+    if photo is None:
         return jsonify({"ok": False,
                         "error": "Please choose a photo first."}), 400
+    # NOTE: deliberately NOT checking photo.filename here - blob uploads
+    # legitimately have no name. run_pipeline() validates the BYTES.
     result, err = run_pipeline(
         photo,
         request.form.get("coin_preset", "auto"),
@@ -271,9 +382,10 @@ def api_live():
     if frame is None:
         return jsonify({"ok": False, "error": "No frame received."}), 400
     data = frame.read()
-    bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    bgr = decode_photo(data)
     if bgr is None:
-        return jsonify({"ok": False, "error": "Frame was not a valid image."}), 400
+        return jsonify({"ok": False,
+                        "error": "Frame was not a valid image."}), 400
     # normalize to the LIVE working width FIRST, so the overlay boxes
     # (drawn in the analyzed frame's coordinates) line up exactly with
     # the canvas size we report below
@@ -348,7 +460,7 @@ def api_detect_onion():
     up = request.files.get("photo") or request.files.get("frame")
     if up is None:
         return jsonify({"ok": False, "error": "Send a photo file."}), 400
-    bgr = cv2.imdecode(np.frombuffer(up.read(), np.uint8), cv2.IMREAD_COLOR)
+    bgr = decode_photo(up.read())
     if bgr is None:
         return jsonify({"ok": False, "error": "Not a readable image."}), 400
     v = onion_presence.check(bgr)

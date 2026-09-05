@@ -231,7 +231,24 @@ button{font-family:var(--font-body);cursor:pointer}
   color:var(--fg-subtle);text-transform:uppercase;margin-top:10px}
 .dz-note{font-size:.77rem;color:var(--fg-subtle)}
 .pickname{margin-top:12px;font-size:.82rem;color:var(--fg-muted);
-  text-align:center}
+  text-align:center;word-break:break-word}
+.dz-pick{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;
+  margin-top:14px}
+.btn-sm{padding:9px 14px;font-size:.82rem}
+/* the preview proves to the user that the pick actually worked - on
+   phones the old UI gave no feedback at all when a photo was chosen */
+.pickprev{display:none;margin:12px auto 0;max-width:min(100%,240px);
+  border-radius:var(--r-sm);border:1px solid rgba(255,255,255,.12)}
+.pickprev.show{display:block}
+/* phones: make every tap target comfortable and stop iOS zooming the
+   page when a control is focused (font-size < 16px triggers that) */
+@media (max-width:640px){
+  .ws-body{padding:16px}
+  .dropzone{min-height:200px;padding:24px 14px}
+  .btn{min-height:46px}
+  .dz-pick .btn{flex:1 1 44%}
+  input,select,textarea{font-size:16px}
+}
 .upl-actions{margin-top:18px;display:flex;flex-direction:column;gap:12px}
 .progress{height:2px;background:rgba(255,255,255,.09);border-radius:2px;
   overflow:hidden;display:none}
@@ -701,10 +718,19 @@ footer{background:var(--bg-deep);padding:48px 0 32px;
             </svg>
             <div class="dz-main" data-i18n="upload_b">Drag &amp; drop your onion photo</div>
             <div class="dz-browse" data-i18n="upload_s">or <u>browse from your device</u> · JPG / PNG / WEBP · up to 4 MB</div>
-            <div class="dz-note">On a phone, browsing opens the camera. Large photos are compressed automatically.</div>
-            <input type="file" id="photo" accept="image/*" capture="environment" style="display:none">
+            <div class="dz-note" data-i18n="upload_note">Tap to choose a photo — or use the buttons below. Large photos are compressed automatically.</div>
+            <div class="dz-pick">
+              <button type="button" class="btn btn-ghost btn-sm" id="btnGallery"
+                      data-i18n="pick_gallery">Choose from gallery</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="btnCamera"
+                      data-i18n="pick_camera">Take a photo</button>
+            </div>
+            <input type="file" id="photoCam" accept="image/*" capture="environment" style="display:none">
+            <input type="file" id="photo" name="photo"
+                   accept="image/*,image/heic,image/heif" style="display:none">
           </label>
           <div class="pickname" id="pickname">No photo selected yet.</div>
+          <img class="pickprev" id="pickprev" alt="selected photo preview">
           <div class="upl-actions">
             <div class="progress" id="progress"><i></i></div>
             <button class="btn btn-primary" id="btn" onclick="analyzeUpload()">
@@ -1323,11 +1349,65 @@ function generateFullReport(){
   }).catch(function(e){$("btnReport").disabled=false;toast(e,true);});
 }
 
-/* ================= UPLOAD FLOW ================= */
-$("photo").addEventListener("change",function(){
-  $("pickname").textContent=this.files.length?
-    "Selected: "+this.files[0].name:"No photo selected yet.";
-});
+/* ================= UPLOAD FLOW =================
+   MOBILE NOTES (why this code looks the way it does):
+   * The chosen File is kept in a JS variable, NOT read back out of the
+     <input> at submit time. iOS Safari and several Android WebViews
+     invalidate input.files after the page scrolls/re-renders, which is
+     the classic "I picked a photo and Analyse did nothing" bug.
+   * Two separate inputs: one plain picker (gallery) and one with
+     capture="environment" (camera). A single input with capture= FORCES
+     the camera on Android, so users could never pick an existing photo.
+   * Every photo is normalised to JPEG in the browser (canvas), which
+     also converts iPhone HEIC and applies EXIF rotation, then uploaded.
+*/
+var pickedFile=null;                     /* the ONE source of truth */
+
+function setPicked(file){
+  pickedFile=file||null;
+  var nameEl=$("pickname"),prev=$("pickprev");
+  if(!pickedFile){
+    nameEl.textContent="No photo selected yet.";
+    prev.classList.remove("show");prev.removeAttribute("src");
+    return;
+  }
+  var kb=Math.round(pickedFile.size/1024);
+  var nm=pickedFile.name||"photo.jpg";
+  nameEl.textContent="Selected: "+nm+" ("+(kb>1024?
+    (kb/1024).toFixed(1)+" MB":kb+" KB")+")";
+  /* visible confirmation that the pick worked (phones gave none) */
+  try{
+    var U=window.URL||window.webkitURL;
+    if(prev.dataset.url){U.revokeObjectURL(prev.dataset.url);}
+    var u=U.createObjectURL(pickedFile);
+    prev.dataset.url=u;prev.src=u;prev.classList.add("show");
+  }catch(e){prev.classList.remove("show");}
+  $("status").textContent="";
+}
+
+function wirePicker(id){
+  var el=$(id);
+  if(!el){return;}
+  el.addEventListener("change",function(){
+    var f=this.files&&this.files[0];
+    if(f){setPicked(f);}
+    /* reset the value so picking the SAME file twice still fires
+       'change' (mobile Safari skips the event otherwise) */
+    try{this.value="";}catch(e){}
+  });
+}
+wirePicker("photo");
+wirePicker("photoCam");
+
+/* explicit gallery / camera buttons. They must not bubble up to the
+   <label for="photo">, or the phone would open two pickers at once. */
+(function(){
+  var g=$("btnGallery"),c=$("btnCamera");
+  if(g){g.addEventListener("click",function(e){
+    e.preventDefault();e.stopPropagation();$("photo").click();});}
+  if(c){c.addEventListener("click",function(e){
+    e.preventDefault();e.stopPropagation();$("photoCam").click();});}
+})();
 /* drag & drop onto the dropzone (desktop) */
 (function(){
   var dz=$("dropzone");
@@ -1339,56 +1419,133 @@ $("photo").addEventListener("change",function(){
   });
   dz.addEventListener("drop",function(e){
     var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
-    if(f&&String(f.type).indexOf("image/")===0){
-      try{
-        $("photo").files=e.dataTransfer.files;
-        $("pickname").textContent="Selected: "+f.name;
-      }catch(err){/* very old browsers: file list is read-only */}
+    if(f&&(String(f.type).indexOf("image/")===0||/\.(jpe?g|png|webp|bmp|heic|heif)$/i.test(f.name||""))){
+      setPicked(f);
     }else if(f){
       toast("That file is not an image — please drop a JPG, PNG or WEBP photo.");
     }
   });
 })();
-function shrinkPhoto(file){
-  /* Big phone photos (often 5-20 MB) would be rejected by the server
-     (4 MB limit on Vercel). We downscale them IN THE BROWSER to at most
-     2000 px / ~85% JPEG - same visible quality, ~10x smaller upload.
-     Note: re-encoding drops EXIF (camera distance scale) - only used
-     for photos that would otherwise fail entirely. */
-  if(file.size<3.0*1024*1024){return Promise.resolve(file);}
-  return new Promise(function(res){
-    var img=new Image(),U=window.URL||window.webkitURL;
-    img.onload=function(){
-      try{
-        var MAX=2000,sc=Math.min(1,MAX/Math.max(img.width,img.height));
-        var c=document.createElement("canvas");
-        c.width=Math.round(img.width*sc);c.height=Math.round(img.height*sc);
-        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
-        U.revokeObjectURL(img.src);
-        c.toBlob(function(b){res(b||file);},"image/jpeg",0.85);
-      }catch(e){res(file);}
-    };
-    img.onerror=function(){res(file);};
-    img.src=U.createObjectURL(file);
+function isHeic(file){
+  var t=String(file.type||"").toLowerCase(),n=String(file.name||"").toLowerCase();
+  return t.indexOf("heic")>=0||t.indexOf("heif")>=0||/\.hei[cf]$/.test(n);
+}
+
+function decodeToBitmap(file){
+  /* Decode a File into something drawable. createImageBitmap is the only
+     path that handles HEIC on the phones that can display it, and it also
+     applies EXIF rotation for us ("from-image"). Falls back to <img>. */
+  if(window.createImageBitmap){
+    try{
+      return createImageBitmap(file,{imageOrientation:"from-image"})
+        .catch(function(){return decodeViaImg(file);});
+    }catch(e){/* older signature: no options object */
+      try{return createImageBitmap(file).catch(function(){return decodeViaImg(file);});}
+      catch(e2){return decodeViaImg(file);}
+    }
+  }
+  return decodeViaImg(file);
+}
+
+function decodeViaImg(file){
+  return new Promise(function(res,rej){
+    var img=new Image(),U=window.URL||window.webkitURL,url=U.createObjectURL(file);
+    img.onload=function(){U.revokeObjectURL(url);res(img);};
+    img.onerror=function(){U.revokeObjectURL(url);rej(new Error("decode"));};
+    img.src=url;
   });
 }
+
+function shrinkPhoto(file){
+  /* Normalise ANY phone photo to an upload-safe JPEG.
+
+     Three separate mobile problems solved here:
+     1. SIZE   - phone photos are 5-20 MB; the server caps uploads at
+                 4 MB (Vercel hard-rejects more). We downscale to 2000 px.
+     2. FORMAT - iPhones save HEIC, which no server-side OpenCV build
+                 reads. Drawing it to a canvas re-encodes it as JPEG.
+     3. ORIENT - portrait photos carry an EXIF rotation flag; the canvas
+                 path bakes the real rotation into the pixels.
+
+     Small, already-JPEG photos are passed through untouched so their
+     EXIF focal length (the camera-distance scale) survives. */
+  var small=file.size<3.0*1024*1024;
+  var plain=/^image\/(jpeg|jpg|png|webp)$/i.test(String(file.type||""));
+  if(small&&plain&&!isHeic(file)){return Promise.resolve(file);}
+
+  return decodeToBitmap(file).then(function(src){
+    var w=src.width||src.naturalWidth,h=src.height||src.naturalHeight;
+    if(!w||!h){throw new Error("empty image");}
+    var MAX=2000,sc=Math.min(1,MAX/Math.max(w,h));
+    var c=document.createElement("canvas");
+    c.width=Math.max(1,Math.round(w*sc));
+    c.height=Math.max(1,Math.round(h*sc));
+    c.getContext("2d").drawImage(src,0,0,c.width,c.height);
+    if(src.close){try{src.close();}catch(e){}}
+    return new Promise(function(res){
+      /* toBlob is missing on some old Android browsers -> dataURL path */
+      if(c.toBlob){
+        c.toBlob(function(b){res(b||dataUrlToBlob(c));},"image/jpeg",0.85);
+      }else{res(dataUrlToBlob(c));}
+    });
+  }).catch(function(){
+    /* Could not decode in the browser (e.g. HEIC on a desktop browser).
+       Send the ORIGINAL bytes and let the server try - it has a Pillow
+       fallback and returns a clear message if it also cannot read it. */
+    return file;
+  });
+}
+
+function dataUrlToBlob(canvas){
+  var parts=canvas.toDataURL("image/jpeg",0.85).split(",");
+  var bin=atob(parts[1]),arr=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++){arr[i]=bin.charCodeAt(i);}
+  return new Blob([arr],{type:"image/jpeg"});
+}
+function uploadName(file){
+  /* Always hand the server a .jpg name: we re-encode to JPEG in the
+     browser, and some phones send names like "image.heic" or none. */
+  var n=String((file&&file.name)||"photo.jpg").replace(/[\\/]/g,"_");
+  return n.replace(/\.(hei[cf]|jpe?g|png|webp|bmp|jfif)$/i,"")+".jpg";
+}
+
 function analyzeUpload(){
-  var input=$("photo");
-  if(!input.files.length){toast("Please add a photo first.");return;}
+  /* use the stored File - see the note at the top of the upload flow */
+  var file=pickedFile;
+  if(!file){
+    var el=$("photo");
+    if(el&&el.files&&el.files.length){file=el.files[0];}
+    var cam=$("photoCam");
+    if(!file&&cam&&cam.files&&cam.files.length){file=cam.files[0];}
+  }
+  if(!file){toast("Please add a photo first.");return;}
+
   var btn=$("btn");btn.disabled=true;
-  $("status").textContent="Analyzing… (counting, measuring, grading)";
+  $("status").textContent="Preparing photo…";
   $("progress").classList.add("show");
-  shrinkPhoto(input.files[0]).then(function(photo){
-    var fd=new FormData();fd.append("photo",photo,input.files[0].name);
+
+  function done(){btn.disabled=false;$("progress").classList.remove("show");}
+
+  shrinkPhoto(file).then(function(photo){
+    if(!photo||!photo.size){throw new Error(
+      "The photo could not be read on this device. Try picking it from "+
+      "the gallery, or save it as JPEG first.");}
+    $("status").textContent="Analyzing… (counting, measuring, grading)";
+    var fd=new FormData();
+    fd.append("photo",photo,uploadName(file));
     appendForm(fd);   /* batch ID auto-generates; no coin question anymore */
-    return fetch("/api/analyze",{method:"POST",body:fd});
+    /* no timeout on mobile networks: a slow 3G upload of a 2 MB photo
+       can take 30s+, and an aborted request looked like "nothing happens" */
+    return fetch("/api/analyze",{method:"POST",body:fd,cache:"no-store"});
   })
   .then(function(r){
-    return r.json().catch(function(){throw new Error("Server error "+r.status);});
+    return r.json().catch(function(){
+      throw new Error(r.status===413?
+        "That photo is too large for this server. Try a smaller photo.":
+        "Server error "+r.status+" — please try again.");});
   })
   .then(function(d){
-    btn.disabled=false;$("status").textContent="";
-    $("progress").classList.remove("show");
+    done();$("status").textContent="";
     if(d.ok){renderResults(d);}
     else if(String(d.error).indexOf("Onion not found")===0){
       /* STEP 0: the scikit-learn presence model says this photo has no
@@ -1400,9 +1557,15 @@ function analyzeUpload(){
       toast(d.error,true);
       $("results").style.display="none";$("results").innerHTML="";}
   })
-  .catch(function(e){btn.disabled=false;
-    $("progress").classList.remove("show");
-    $("status").innerHTML='<span class="err">'+e+"</span>";});
+  .catch(function(e){
+    done();
+    var msg=(e&&e.message)?e.message:String(e);
+    if(/failed to fetch|networkerror|load failed/i.test(msg)){
+      msg="Could not reach the server. Check your connection and try again.";
+    }
+    $("status").innerHTML='<span class="err">'+msg+"</span>";
+    toast(msg,true);
+  });
 }
 
 /* ================= RESULTS RENDER (inspection-report style) =================
@@ -1721,6 +1884,9 @@ var I18N = {
       q_dark:"TOO DARK — USE TORCH", q_bright:"TOO BRIGHT",
       q_blur:"HOLD STEADY — BLURRY", q_good:"GOOD — SHARP ",
       pill_live:"LIVE", pill_paused:"PAUSED",
+      pick_gallery:"Choose from gallery", pick_camera:"Take a photo",
+      upload_note:"Tap to choose a photo — or use the buttons below. "+
+        "Large photos are compressed automatically.",
       no_onion_title:"No onion detected in this image.",
       no_onion_tips:"The AI checked colour, texture and shape of every "+
         "object in the photo and none of them looks like an onion bulb. "+
@@ -1740,6 +1906,9 @@ var I18N = {
       no_onion:"फोटो में प्याज़ नहीं मिला। सादे, विपरीत रंग की पृष्ठभूमि पर पूरे प्याज़ की फोटो लें।",
       no_onion_live:"प्याज़ नहीं मिला। सादे पृष्ठभूमि पर पूरे प्याज़ की ओर कैमरा करें।",
       no_onion_banner:"प्याज़ नहीं मिला",
+      pick_gallery:"गैलरी से चुनें", pick_camera:"फोटो लें",
+      upload_note:"फोटो चुनने के लिए टैप करें — या नीचे के बटन इस्तेमाल करें। "+
+        "बड़ी फोटो अपने आप छोटी कर दी जाती है।",
       no_onion_title:"इस फोटो में प्याज़ नहीं मिला।",
       no_onion_tips:"AI ने फोटो की हर वस्तु का रंग, बनावट और आकार जाँचा — "+
         "कोई भी प्याज़ जैसा नहीं लगा। सुझाव: पूरे प्याज़ (कटे हुए नहीं) "+
