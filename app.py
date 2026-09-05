@@ -38,6 +38,7 @@ import numpy as np
 from flask import Flask, jsonify, request, send_from_directory, make_response
 
 import grader
+import onion_presence
 import yolo_mode
 
 # ------------------------------------------------------------------
@@ -58,6 +59,9 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(BASE_DIR, "outputs"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# STEP 0 gate: the scikit-learn "is there an onion here?" model
+# (onion_presence.py). Set ONION_PRESENCE=0 to switch it off.
+PRESENCE_ENABLED = os.environ.get("ONION_PRESENCE", "1") != "0"
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = (
     4 * 1024 * 1024 if SERVERLESS else 16 * 1024 * 1024
@@ -136,6 +140,18 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
         return None, err
     batch_id = (batch_id or "").strip() or None   # empty -> auto batch id
 
+    # ---- STEP 0: is there an onion at all? (scikit-learn model) ----
+    # Runs BEFORE grading so a photo of a tomato / an empty table gets
+    # an honest "Onion not found" instead of invented grades.
+    presence = None
+    if PRESENCE_ENABLED:
+        bgr0 = cv2.imread(save_path)
+        if bgr0 is not None:
+            presence = onion_presence.check(bgr0)
+            if not presence["is_onion"]:
+                return None, (onion_presence.NOT_FOUND_MSG + " Reason: "
+                              + presence["reason"])
+
     try:
         if mode == "yolo":
             rep = yolo_mode.analyze(save_path, coin_mm=coin_mm,
@@ -167,7 +183,11 @@ def run_pipeline(file_storage, coin_preset, coin_custom, batch_id, mode="cv",
                 _b64.b64encode(fh.read()).decode()
     else:
         urls["original"] = f"/uploads/{save_name}"
-    return {"rep": clean_report(rep), "urls": urls}, None
+    out = {"rep": clean_report(rep), "urls": urls}
+    if presence:
+        out["presence"] = presence
+        out["rep"]["presence"] = presence
+    return out, None
 
 
 def file_urls(rep):
@@ -259,6 +279,16 @@ def api_live():
     # the canvas size we report below
     bgr = grader.fit_live_frame(bgr)
 
+    # STEP 0 (live): the scikit-learn presence model. A frame with no
+    # onion returns HTTP 200 + no_onion so scanning keeps running.
+    presence = onion_presence.check(bgr) if PRESENCE_ENABLED else None
+    if presence and not presence["is_onion"]:
+        return jsonify({"ok": True, "no_onion": True, "presence": presence,
+                        "rep": {"onion_count": 0, "onions": [],
+                                "frame_w": int(bgr.shape[1]),
+                                "frame_h": int(bgr.shape[0])},
+                        "error": onion_presence.NOT_FOUND_MSG})
+
     coin_mm, dist_mm, assu_mm, err = resolve_coin(
         request.form.get("coin_preset", "auto"),
         request.form.get("coin_custom", ""),
@@ -285,6 +315,8 @@ def api_live():
     # can line up the overlay boxes exactly
     rep["frame_w"], rep["frame_h"] = int(bgr.shape[1]), int(bgr.shape[0])
     payload = {"ok": True, "rep": clean_report(rep)}
+    if presence:
+        payload["presence"] = presence
     if not rep.get("onion_detected", rep.get("onion_count", 0) > 0):
         # Live scanning must keep running (HTTP 200) so the next frame
         # can recover; the page shows this as a red "no onion" error.
@@ -302,7 +334,27 @@ def api_mode_info():
            "The free pretrained YOLOv8 does not know onions - train it "
            "with train_yolo.py on your labeled photos. Classic CV mode "
            "is fully working meanwhile.")
-    return jsonify({"yolo_ready": ready, "message": msg})
+    return jsonify({"yolo_ready": ready, "message": msg,
+                    "presence": onion_presence.info(),
+                    "presence_enabled": PRESENCE_ENABLED})
+
+
+@app.route("/api/detect-onion", methods=["POST"])
+def api_detect_onion():
+    """Onion / not-onion only (scikit-learn), no grading.
+
+    Handy for integrations: POST a photo as "photo" (or "frame") and get
+    {"ok":true,"is_onion":false,"message":"Onion not found ..."}"""
+    up = request.files.get("photo") or request.files.get("frame")
+    if up is None:
+        return jsonify({"ok": False, "error": "Send a photo file."}), 400
+    bgr = cv2.imdecode(np.frombuffer(up.read(), np.uint8), cv2.IMREAD_COLOR)
+    if bgr is None:
+        return jsonify({"ok": False, "error": "Not a readable image."}), 400
+    v = onion_presence.check(bgr)
+    return jsonify({"ok": True, **v, "model_info": onion_presence.info(),
+                    "message": ("Onion detected." if v["is_onion"]
+                                else onion_presence.NOT_FOUND_MSG)})
 
 
 def _safe_name(name):

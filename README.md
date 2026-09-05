@@ -30,6 +30,7 @@ Click the **हिं** button in the nav for the Hindi UI.
 | What | Where |
 |---|---|
 | Main app (upload + live scan) | `python app.py` → :8000 |
+| "Is it an onion?" check (scikit-learn) | `POST /api/detect-onion` |
 | Offline phone app (PWA, on-device AI) | `/offline/` → Add to Home Screen |
 | Batch dashboard | `python dashboard.py` → :8002 |
 | Integration API (JSON/CSV/PDF) | `python api.py` → :8001 |
@@ -47,6 +48,65 @@ retry + adaptive + Hough sweep) rescues low-contrast/uneven-light onions.
 Every analysis produces: `annotated.jpg`, `report.json` (embeds the photo),
 `report.txt`, `report_card.jpg`, and `full_report.jpg` (the whole report
 as ONE image).
+
+## Step 0 — "Is there an onion at all?" (scikit-learn)
+
+Before anything is graded, `onion_presence.py` asks one question about
+the whole photo: **does this picture contain onions?** If not, the app
+answers honestly — **"Onion not found in this image."** — instead of
+inventing grades for a tomato, an apple or an empty table.
+
+* **Model** — a scikit-learn `RandomForestClassifier` (250 trees) over
+  23 OpenCV features: blob count/roundness/solidity, HSV + Lab colour
+  statistics, palette fractions (green / blue / purple / gloss / vivid /
+  tomato-red), Laplacian micro-texture and Canny edge density —
+  i.e. the papery, matte, low-gloss look of onion skin.
+* **Runtime is numpy-only** — the forest is exported to
+  `models/onion_presence.json` (like `models/onion_clf.json`), so the
+  web app and the Vercel deployment need **no scikit-learn** to predict.
+* **Wired into everything** — upload (`/api/analyze`), live camera
+  (`/api/live`), YOLO mode (`yolo_mode.analyze`) and a standalone
+  endpoint `POST /api/detect-onion`. The web page renders a dedicated
+  "Onion not found" card with the measured reason, and a
+  `onion check 99% (sklearn)` chip on every real report.
+
+```bash
+python train_presence.py            # re-train + export the JSON model
+python selftest_presence.py         # regression check (45/45 passing)
+python onion_presence.py photo.jpg  # CLI: ONION / NOT FOUND + reason
+curl -F photo=@photo.jpg http://localhost:8000/api/detect-onion
+```
+
+**Honest numbers**: grouped 5-fold cross-validation (a photo and its
+augmented copies never straddle the split) = **0.83 accuracy** on this
+repo's 70-odd source images — real onion photos, tomato / potato /
+apple / empty-table negatives, plus synthetic scenes. That is a
+small-sample number on this data, not a claim about all photos. Drop
+your own photos in `dataset_presence/positive` and
+`dataset_presence/negative` and re-run `train_presence.py` to improve
+it.
+
+## YOLOv8 engine (OpenCV + YOLOv8 combo)
+
+`models/onion_yolo.pt` ships fine-tuned and the app auto-enables **YOLO
+mode** when it is present: YOLOv8 boxes every onion, then the OpenCV
+pipeline (`grader.py`) measures mm, classifies the surface and grades
+the batch — detector from deep learning, measurement from classic CV.
+
+```bash
+python make_dummy_detection_dataset.py     # scenes + labels
+python train_yolo.py --epochs 40 --imgsz 416 --batch 16
+python yolo_mode.py photo.jpg --classifier rules
+```
+
+The shipped weights were trained **on this repo's synthetic detection
+scenes** (220 train / 40 val, 40 epochs, from scratch — the sandbox had
+no internet for the COCO-pretrained checkpoint). Measured on its own
+synthetic val split: **mAP50 0.995, mAP50-95 0.954, P 0.999, R 0.994**.
+Those are SYNTHETIC numbers — they prove the pipeline, not field
+accuracy. For real deployment, fine-tune on labeled real photos
+(Colab T4, see `train_yolo.py`) and drop the new `best.pt` in as
+`models/onion_yolo.pt`.
 
 ## Detect only onions (the ONION-ONLY gate)
 

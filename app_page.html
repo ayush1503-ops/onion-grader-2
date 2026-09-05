@@ -1390,6 +1390,12 @@ function analyzeUpload(){
     btn.disabled=false;$("status").textContent="";
     $("progress").classList.remove("show");
     if(d.ok){renderResults(d);}
+    else if(String(d.error).indexOf("Onion not found")===0){
+      /* STEP 0: the scikit-learn presence model says this photo has no
+         onion in it - show the honest "not found" card, never grades */
+      $("status").textContent="";
+      renderNotFound(d.error);
+      toast("Onion not found in this image.",true);}
     else{$("status").innerHTML='<span class="err">'+d.error+"</span>";
       toast(d.error,true);
       $("results").style.display="none";$("results").innerHTML="";}
@@ -1428,6 +1434,20 @@ function qbar(label,pct,col,foot){
     '<div class="track"><i data-w="'+pct+'" style="background:'+col+'"></i></div>'+
     (foot?'<div class="ind-foot">'+foot+"</div>":"")+"</div>";
 }
+function renderNotFound(msg){
+  /* Big, honest "no onion here" card (scikit-learn presence model). */
+  var html='<div class="wrap"><div class="report">'+
+    '<div class="rep-head"><div><div class="t1">Onion Detection</div>'+
+    '<h2>Onion not found</h2></div>'+
+    '<div class="t2">scikit-learn presence model<br>step 0 of the pipeline</div></div>'+
+    '<div class="err-box" style="font-size:.95rem;line-height:1.5">'+
+    "🧅 <b>"+t("no_onion_title")+"</b><br>"+msg+"</div>"+
+    '<div class="ai-panel" style="margin-top:12px">'+t("no_onion_tips")+"</div>"+
+    "</div></div>";
+  var box=$("results");box.innerHTML=html;box.style.display="block";
+  box.scrollIntoView({behavior:"smooth",block:"start"});
+}
+
 function renderResults(d){
   var r=d.rep,u=d.urls,n=r.onion_count||0,ons=r.onions||[];
   var conf=confidenceOf(r);
@@ -1481,6 +1501,8 @@ function renderResults(d){
     (r.rejected_not_onion?
       "<div>not onion skin <b style=\"color:var(--warn-c)\">"+
       r.rejected_not_onion+"</b> rejected</div>":"")+
+    (r.presence?"<div>onion check <b>"+Math.round(100*r.presence.p_onion)+
+      "% </b>(sklearn)</div>":"")+
     "<div>watershed splits <b>"+r.watershed_splits+"</b></div>"+
     "<div>median ⌀ <b>"+(st.median!=null?st.median+" mm":"—")+"</b></div>"+
     "<div>est. weight <b>~"+r.estimated_weight_kg+" kg</b></div>"+
@@ -1698,7 +1720,12 @@ var I18N = {
       honest:"Visible surface analysis only — a normal photo cannot detect internal rot, internal damage or internal moisture. No accuracy is claimed until measured on a labeled test set.",
       q_dark:"TOO DARK — USE TORCH", q_bright:"TOO BRIGHT",
       q_blur:"HOLD STEADY — BLURRY", q_good:"GOOD — SHARP ",
-      pill_live:"LIVE", pill_paused:"PAUSED"},
+      pill_live:"LIVE", pill_paused:"PAUSED",
+      no_onion_title:"No onion detected in this image.",
+      no_onion_tips:"The AI checked colour, texture and shape of every "+
+        "object in the photo and none of them looks like an onion bulb. "+
+        "Tips: photograph WHOLE onions (not slices), on a plain "+
+        "contrasting surface, in even light, from directly above."},
   hi:{tab_live:"लाइव कैमरा", tab_upload:"फोटो अपलोड करें",
       cta_live:"लाइव स्कैन शुरू करें", cta_upload:"फोटो अपलोड करें",
       start:"कैमरा चालू करें", pause:"रोकें", resume:"फिर चालू करें",
@@ -1712,7 +1739,11 @@ var I18N = {
       pill_live:"चालू", pill_paused:"रुका हुआ",
       no_onion:"फोटो में प्याज़ नहीं मिला। सादे, विपरीत रंग की पृष्ठभूमि पर पूरे प्याज़ की फोटो लें।",
       no_onion_live:"प्याज़ नहीं मिला। सादे पृष्ठभूमि पर पूरे प्याज़ की ओर कैमरा करें।",
-      no_onion_banner:"प्याज़ नहीं मिला"}
+      no_onion_banner:"प्याज़ नहीं मिला",
+      no_onion_title:"इस फोटो में प्याज़ नहीं मिला।",
+      no_onion_tips:"AI ने फोटो की हर वस्तु का रंग, बनावट और आकार जाँचा — "+
+        "कोई भी प्याज़ जैसा नहीं लगा। सुझाव: पूरे प्याज़ (कटे हुए नहीं) "+
+        "सादे, विपरीत रंग की सतह पर, अच्छी रोशनी में, ऊपर से फोटो लें।"}
 };
 var LANG = localStorage.getItem("og_lang") || "en";
 function t(k){ return (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k; }

@@ -46,6 +46,7 @@ import cv2
 import numpy as np
 
 import grader
+import onion_presence
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "models")
@@ -511,6 +512,10 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
     if bgr is None:
         raise FileNotFoundError(f"Could not read image: {image}")
 
+    # STEP 0: scikit-learn presence check - a photo with no onion in it
+    # must say so honestly instead of grading whatever YOLO boxed.
+    presence = onion_presence.check(bgr)
+
     dets = detect(bgr, conf=conf, model_path=model_path)
     # "ONIONS ONLY": keep only known onion classes. A stock COCO model
     # (CLI demo) labels people/chairs/etc. - those must never be graded
@@ -524,6 +529,12 @@ def analyze(image, coin_mm=27.0, batch_id=None, out_dir="outputs",
                                         classifier=classifier,
                                         skipped_class=len(skipped_names),
                                         skipped_names=skipped_names)
+    rep["presence"] = presence
+    if not presence["is_onion"]:
+        # override: the presence model says there is no onion here
+        rep["onion_detected"] = False
+        rep["warnings"] = list(rep.get("warnings", [])) + [
+            onion_presence.NOT_FOUND_MSG + " Reason: " + presence["reason"]]
     if model_path:
         rep["detector"] = f"YOLOv8 ({os.path.basename(model_path)})"
     if batch_id:
