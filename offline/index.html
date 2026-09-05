@@ -86,6 +86,8 @@ td{padding:.35rem .4rem;border-bottom:1px solid var(--bd)}
 .kg b{color:var(--acc)}
 .warnb{background:#fef9c3;border:1px solid #fde047;color:#713f12;border-radius:9px;
   padding:.5rem .7rem;font-size:.72rem;margin:.45rem 0}
+.errb{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:9px;
+  padding:.5rem .7rem;font-size:.78rem;margin:.45rem 0;font-weight:600}
 .dl{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.7rem}
 .dl a,.dl button{background:#0F172A;color:#fff;border:0;border-radius:9px;
   padding:.55rem .8rem;font:600 .72rem var(--fb);cursor:pointer;text-decoration:none}
@@ -378,7 +380,14 @@ function analyzeAll(bgr,coinMm){
   var blobs=getBlobs(mask);
   var result={onions:[],warnings:[],flags:[],splits:0};
   if(!blobs.length){
-    result.flags.push("No onions detected - check light/background.");
+    result.error="No onion detected. Photograph whole onion bulbs on a plain, contrasting background so they stand out clearly.";
+    result.flags.push(result.error);
+    result.count=0;result.splits=0;
+    result.gc={A:0,URS:0,REJECT:0,CHECK:0};
+    result.cc={GOOD:0,DAMAGED:0,ROTTEN:0,SPROUTED:0,UNDERSIZED:0};
+    result.gp={A:0,U:0,R:0};result.weightKg=0;result.bags=0;
+    result.coverage=0;result.pxPerMm=0;result.scale="no objects found";
+    result.layers=[];result.summary=result.error;
     return result;
   }
   var areas=blobs.map(function(c){return cv.contourArea(c);})
@@ -515,7 +524,11 @@ function analyzeAll(bgr,coinMm){
   result.coverage=+(100*cover/totalPx).toFixed(1);
   result.pxPerMm=+pxPerMm.toFixed(2);result.scale=scaleTxt;
   /* plain-language summary */
-  if(!n){result.summary="No onions detected.";}
+  if(!n){
+    result.error="No onion detected. Photograph whole onion bulbs on a plain, contrasting background so they stand out clearly.";
+    result.summary=result.error;
+    result.flags.push(result.error);
+  }
   else{
     var reasons=[];
     [["ROTTEN","rotten"],["DAMAGED","damaged"],["SPROUTED","sprouted"],
@@ -685,6 +698,18 @@ function drawOverlay(canvasEl,r,source){
 function paintBoxes(ctx,r){
   var lw=Math.max(2,Math.round(ctx.canvas.width/320));
   var fs=Math.max(11,Math.round(ctx.canvas.width/46));
+  if(!r.onions||!r.onions.length){
+    ctx.fillStyle="rgba(15,23,42,.45)";
+    ctx.fillRect(0,0,ctx.canvas.width,ctx.canvas.height);
+    ctx.fillStyle="#dc2626";
+    ctx.font="600 "+Math.max(16,Math.round(ctx.canvas.width/22))+
+      "px Inter,system-ui,sans-serif";
+    ctx.textAlign="center";
+    ctx.fillText("NO ONION DETECTED",ctx.canvas.width/2,ctx.canvas.height/2);
+    ctx.textAlign="left";
+    $("pillTxt").textContent="NO ONION DETECTED";
+    return;
+  }
   r.onions.forEach(function(o){
     var col=CLASS_COLORS[o.label];
     ctx.strokeStyle=col;ctx.lineWidth=lw;
@@ -706,7 +731,7 @@ function paintBoxes(ctx,r){
 /* ---------- render the results panel ---------- */
 function renderResults(r,ms){
   $("resCard").style.display="block";
-  $("rCount").textContent=r.count;
+  $("rCount").textContent=r.count||0;
   $("rMeta").textContent="analyzed on-device in "+ms+" ms · "+
     r.pxPerMm+" px/mm · "+r.scale;
   $("bA").style.width=Math.max(r.gp.A,2)+"%";$("vA").textContent=r.gp.A+"%";

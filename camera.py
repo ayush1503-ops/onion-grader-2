@@ -83,6 +83,8 @@ def main():
     last_auto = time.time()      # for --auto mode
 
     def show_counts(rep):
+        if not rep.get("onion_detected", rep.get("onion_count", 0) > 0):
+            return "ERROR: No onion detected"
         p = rep["grade_percent"]
         return (f"{rep['onion_count']} onions | ~{rep['estimated_weight_kg']} kg | "
                 f"A {p['A']}% URS {p['URS']}% REJ {p['REJECT']}%")

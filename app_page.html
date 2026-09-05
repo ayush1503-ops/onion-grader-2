@@ -240,7 +240,9 @@ button{font-family:var(--font-body);cursor:pointer}
   background:var(--accent-bright);animation:slide 1.1s ease-in-out infinite}
 @keyframes slide{0%{margin-left:-34%}100%{margin-left:100%}}
 #status{text-align:center;font-size:.85rem;color:var(--fg-muted);min-height:1.2em}
-#status .err{color:var(--bad)}
+#status .err{display:block;color:var(--bad);background:rgba(248,113,113,.08);
+  border:1px solid rgba(248,113,113,.28);border-radius:var(--r-sm);
+  padding:10px 13px;margin-top:8px;text-align:left;line-height:1.5}
 /* tips: plain editorial rows, no cards */
 .tips{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:24px}
 .tip{border-top:1px solid var(--border-hover);padding-top:11px}
@@ -317,6 +319,9 @@ button{font-family:var(--font-body);cursor:pointer}
   color:var(--fg-subtle);letter-spacing:.03em;word-break:break-word}
 .warn-box{font-size:.8rem;color:#d9c08a;background:rgba(251,191,36,.05);
   border:1px solid rgba(251,191,36,.18);border-radius:var(--r-sm);
+  padding:10px 13px}
+.err-box{font-size:.8rem;color:#f87171;background:rgba(248,113,113,.08);
+  border:1px solid rgba(248,113,113,.28);border-radius:var(--r-sm);
   padding:10px 13px}
 .ai-panel{font-size:.8rem;background:rgba(94,106,210,.08);
   border:1px solid rgba(94,106,210,.25);border-radius:var(--r-sm);
@@ -1239,13 +1244,19 @@ function liveTick(){
           $("tCount").textContent=med(counts);
           $("tA").textContent=med(mA)+"%";$("tU").textContent=med(mU)+"%";
           $("tR").textContent=med(mR)+"%";
-        }else{$("liveWarn").innerHTML='<div class="warn-box">'+d.error+"</div>";
+          if(d.no_onion||!d.rep.onion_count){
+            $("liveWarn").innerHTML='<div class="err-box">'+t("no_onion_live")+"</div>";
+            $("btnReport").disabled=true;
+            $("tCount").textContent="0";
+          }
+        }else{$("liveWarn").innerHTML='<div class="err-box">'+d.error+"</div>";
           if(String(d.error).indexOf("onion_yolo")>=0){$("yoloToggle").checked=false;}}
       });
   }).catch(function(){busy=false;});
 }
 function drawLive(rep){
-  $("btnReport").disabled=false;
+  var found=!!(rep.onion_detected||rep.onion_count);
+  $("btnReport").disabled=!found;
   $("tCount").textContent=rep.onion_count;
   $("tA").textContent=rep.grade_percent.A+"%";
   $("tU").textContent=rep.grade_percent.URS+"%";
@@ -1256,13 +1267,25 @@ function drawLive(rep){
   $("tScale").textContent=rep.px_per_mm+" px/mm · "+rep.scale_source+
     " · ~"+rep.estimated_weight_kg+" kg";
   $("liveWarn").innerHTML=(rep.warnings||[]).map(function(w){
-    return '<div class="warn-box">'+w+"</div>";}).join("");
+    var cls=(String(w).indexOf("No onion")===0)?"err-box":"warn-box";
+    return '<div class="'+cls+'">'+w+"</div>";}).join("");
   /* draw boxes on the overlay canvas (coords are in the frame we sent).
      Bright OVERLAY colors: they must read on a dark camera picture. */
   var cv=$("overlay"),v=$("video");
   cv.width=rep.frame_w||960;cv.height=rep.frame_h||720;
   var ctx=cv.getContext("2d");
   ctx.clearRect(0,0,cv.width,cv.height);
+  if(!found){
+    ctx.fillStyle="rgba(5,5,6,.45)";
+    ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.fillStyle="#f87171";
+    ctx.font="600 "+Math.max(16,Math.round(cv.width/22))+
+      'px "JetBrains Mono",monospace';
+    ctx.textAlign="center";
+    ctx.fillText(t("no_onion_banner"),cv.width/2,cv.height/2);
+    ctx.textAlign="left";
+    return;
+  }
   (rep.onions||[]).forEach(function(o){
     var x=o.bbox[0],y=o.bbox[1],w=o.bbox[2],h=o.bbox[3];
     var col=OVERLAY_COLORS[o.label]||"#fff";
@@ -1295,7 +1318,8 @@ function generateFullReport(){
   .then(function(d){
     $("btnReport").disabled=false;
     if(d.ok){renderResults(d);toast("Full report generated below.");}
-    else{toast(d.error,true);}
+    else{toast(d.error,true);
+      $("liveWarn").innerHTML='<div class="err-box">'+d.error+"</div>";}
   }).catch(function(e){$("btnReport").disabled=false;toast(e,true);});
 }
 
@@ -1366,7 +1390,9 @@ function analyzeUpload(){
     btn.disabled=false;$("status").textContent="";
     $("progress").classList.remove("show");
     if(d.ok){renderResults(d);}
-    else{$("status").innerHTML='<span class="err">'+d.error+"</span>";}
+    else{$("status").innerHTML='<span class="err">'+d.error+"</span>";
+      toast(d.error,true);
+      $("results").style.display="none";$("results").innerHTML="";}
   })
   .catch(function(e){btn.disabled=false;
     $("progress").classList.remove("show");
@@ -1683,7 +1709,10 @@ var I18N = {
       honest:"केवल बाहरी सतह की जाँच — सामान्य फोटो से अंदरूनी सड़न, क्षति या नमी नहीं पाई जा सकती। जब तक असली डेटा पर जाँच न हो, कोई दावा नहीं।",
       q_dark:"बहुत अंधेरा — टॉर्च जलाएँ", q_bright:"बहुत तेज़ रोशनी",
       q_blur:"स्थिर रखें — धुंधला है", q_good:"बढ़िया — शार्प ",
-      pill_live:"चालू", pill_paused:"रुका हुआ"}
+      pill_live:"चालू", pill_paused:"रुका हुआ",
+      no_onion:"फोटो में प्याज़ नहीं मिला। सादे, विपरीत रंग की पृष्ठभूमि पर पूरे प्याज़ की फोटो लें।",
+      no_onion_live:"प्याज़ नहीं मिला। सादे पृष्ठभूमि पर पूरे प्याज़ की ओर कैमरा करें।",
+      no_onion_banner:"प्याज़ नहीं मिला"}
 };
 var LANG = localStorage.getItem("og_lang") || "en";
 function t(k){ return (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k; }
